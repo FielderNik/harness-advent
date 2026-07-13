@@ -1,0 +1,150 @@
+package com.harnessadvent.api
+
+import com.harnessadvent.application.ModelProfileService
+import com.harnessadvent.application.ProjectService
+import com.harnessadvent.application.TaskService
+import com.harnessadvent.domain.*
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.*
+import io.ktor.server.plugins.callid.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.plugins.statuspages.*
+import io.ktor.server.request.receive
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.collect
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import org.koin.ktor.ext.inject
+import java.util.UUID
+
+@Serializable
+data class ApiError(val code: String, val message: String, val requestId: String)
+
+@Serializable
+data class HealthResponse(val status: String = "ok")
+
+@Serializable
+data class ProjectCreateRequest(val name: String, val path: String)
+
+@Serializable
+data class TaskCreateRequest(
+    val projectId: String,
+    val scenario: TaskScenario,
+    val mode: TaskMode,
+    val input: String,
+)
+
+@Serializable
+data class ApprovalCreateRequest(val kind: ApprovalKind, val decision: ApprovalDecision)
+
+fun Application.configureMonitoring() {
+    install(CallId) {
+        header(HttpHeaders.XRequestId)
+        generate { UUID.randomUUID().toString() }
+        verify { it.length in 1..128 }
+        replyToHeader(HttpHeaders.XRequestId)
+    }
+}
+
+fun Application.configureSerialization() {
+    install(ContentNegotiation) {
+        json(Json {
+            ignoreUnknownKeys = false
+            encodeDefaults = true
+            explicitNulls = false
+        })
+    }
+}
+
+fun Application.configureApi() {
+    val projectService by inject<ProjectService>()
+    val taskService by inject<TaskService>()
+    val modelProfileService by inject<ModelProfileService>()
+    val json = Json { explicitNulls = false }
+    val logger = log
+
+    install(StatusPages) {
+        exception<IllegalArgumentException> { call, cause ->
+            call.respondError(HttpStatusCode.BadRequest, "validation_error", cause.message ?: "Некорректный запрос.")
+        }
+        exception<NoSuchElementException> { call, cause ->
+            call.respondError(HttpStatusCode.NotFound, "not_found", cause.message ?: "Ресурс не найден.")
+        }
+        exception<Throwable> { call, cause ->
+            logger.error("Необработанная ошибка requestId=${call.callId}", cause)
+            call.respondError(HttpStatusCode.InternalServerError, "internal_error", "Внутренняя ошибка сервера.")
+        }
+    }
+
+    routing {
+        get("/health") { call.respond(HealthResponse()) }
+
+        route("/api/v1") {
+            route("/projects") {
+                get { call.respond(projectService.list()) }
+                post {
+                    val request = call.receive<ProjectCreateRequest>()
+                    call.respond(HttpStatusCode.Created, projectService.register(request.name, request.path))
+                }
+                get("/{id}") { call.respond(projectService.get(call.requiredId())) }
+                post("/{id}/scan") { call.respond(projectService.scan(call.requiredId())) }
+            }
+
+            route("/tasks") {
+                get { call.respond(taskService.list()) }
+                post {
+                    val request = call.receive<TaskCreateRequest>()
+                    val task = taskService.create(
+                        projectId = request.projectId,
+                        scenario = request.scenario,
+                        mode = request.mode,
+                        input = request.input,
+                        author = call.actor(),
+                        idempotencyKey = call.request.headers["Idempotency-Key"],
+                    )
+                    call.respond(HttpStatusCode.Accepted, task)
+                }
+                get("/{id}") { call.respond(taskService.get(call.requiredId())) }
+                post("/{id}/cancel") { call.respond(taskService.cancel(call.requiredId())) }
+                get("/{id}/artifacts") { call.respond(taskService.artifacts(call.requiredId())) }
+                post("/{id}/approvals") {
+                    val request = call.receive<ApprovalCreateRequest>()
+                    call.respond(taskService.approve(call.requiredId(), request.kind, request.decision, call.actor()))
+                }
+                get("/{id}/events") {
+                    val taskId = call.requiredId()
+                    taskService.get(taskId)
+                    call.response.cacheControl(CacheControl.NoCache(null))
+                    call.respondTextWriter(contentType = ContentType.Text.EventStream) {
+                        taskService.events(taskId).forEach { event ->
+                            write("data: ${json.encodeToString(TaskEvent.serializer(), event)}\n\n")
+                        }
+                        flush()
+                        taskService.updates().filter { it.taskId == taskId }.collect { event ->
+                            write("data: ${json.encodeToString(TaskEvent.serializer(), event)}\n\n")
+                            flush()
+                        }
+                    }
+                }
+            }
+
+            route("/model-profiles") {
+                get { call.respond(modelProfileService.list()) }
+                get("/{id}/models") { call.respond(modelProfileService.find(call.requiredId()).models) }
+            }
+        }
+    }
+}
+
+private suspend fun ApplicationCall.respondError(status: HttpStatusCode, code: String, message: String) {
+    respond(status, ApiError(code, message, callId ?: "unknown"))
+}
+
+private fun ApplicationCall.requiredId(): String =
+    requireNotNull(parameters["id"]?.takeIf { it.isNotBlank() }) { "Идентификатор обязателен." }
+
+private fun ApplicationCall.actor(): String =
+    request.headers["X-Actor"]?.trim()?.takeIf { it.length in 1..128 } ?: "local"
