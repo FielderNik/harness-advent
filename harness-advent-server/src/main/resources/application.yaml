@@ -1,0 +1,10 @@
+ktor:
+  deployment:
+    port: 8080
+  application:
+    modules:
+      - com.appapp.MonitoringKt.configureMonitoring
+      - com.appapp.SerializationKt.configureSerialization
+      - com.appapp.ExposedKt.configureExposed
+      - com.appapp.KoinKt.configureKoin
+      - com.appapp.RoutingKt.configureRouting

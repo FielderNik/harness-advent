@@ -1,0 +1,31 @@
+# Конфигурация и секреты
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Локальные данные Harness: базы, индексы RAG, кэш и журналы
+*.db
+*.sqlite
+*.sqlite3
+.harness/
+rag-index/
+logs/
+
+# JVM / Gradle / IDE
+.gradle/
+**/build/
+out/
+.idea/
+*.iml
+
+# Node.js / Vite
+**/node_modules/
+**/dist/
+**/.vite/
+
+# ОС
+.DS_Store
