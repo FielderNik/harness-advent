@@ -10,7 +10,13 @@ class DisabledCodeAgentRunner : CodeAgentRunner {
 }
 
 class DisabledMcpRegistry : McpRegistry {
-    override fun allowedTools(): Set<String> = emptySet()
+    override suspend fun servers(): List<McpServer> = emptyList()
+
+    override suspend fun tools(serverId: String): List<McpTool> =
+        throw IllegalArgumentException("MCP-сервер не настроен.")
+
+    override suspend fun call(serverId: String, toolName: String, arguments: kotlinx.serialization.json.JsonObject): McpToolResult =
+        throw IllegalArgumentException("MCP-сервер не настроен.")
 }
 
 /** Network model calls are intentionally disabled until a profile and approved context manifest are wired in. */
@@ -20,6 +26,10 @@ class DisabledModelProvider : ModelProvider {
         available = false,
         diagnostic = "Модельный адаптер не включён в локальном безопасном режиме.",
     )
+
+    override suspend fun complete(profileId: String, request: ModelCompletionRequest): ModelCompletionResult {
+        throw ModelProviderException("Модельный адаптер не включён.")
+    }
 }
 
 class DisabledGitProvider : GitProvider {

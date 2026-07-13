@@ -1,6 +1,5 @@
 package com.harnessadvent.application
 
-import com.harnessadvent.adapters.SafeProjectScanner
 import com.harnessadvent.domain.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -19,9 +18,7 @@ class TaskEventStream {
 class TaskExecutor(
     private val taskRepository: TaskRepository,
     private val sourceRepository: SourceRepository,
-    private val projectRepository: ProjectRepository,
-    private val scanner: SafeProjectScanner,
-    private val agentRunner: CodeAgentRunner,
+    private val modelProvider: ModelProvider,
     private val events: TaskEventStream,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -66,30 +63,26 @@ class TaskExecutor(
 
     private suspend fun runRagQuestion(task: Task) {
         addStep(task, "research", "local-rag", "Поиск локальных источников.")
-        val sources = sourceRepository.search(task.projectId, task.input)
+        val sources = sourceRepository.search(task.projectId, task.input, limit = 5)
         val content = if (sources.isEmpty()) {
             "Подходящих источников не найдено. Сначала запусти сканирование проекта."
         } else {
             sources.joinToString("\n\n") { source ->
-                "${source.path}:${source.lineStart}-${source.lineEnd} sha256=${source.sha256}\n${source.content.take(4_000)}"
+                "${source.path}:${source.lineStart}-${source.lineEnd} sha256=${source.sha256}\n${source.content}"
             }
         }
         taskRepository.addArtifact(
             Artifact(UUID.randomUUID().toString(), task.id, "ragSources", content = content, createdAt = now()),
         )
         publish(task.id, EventLevel.INFO, "rag.sources", "Найдены локальные источники: ${sources.size}.")
-        addStep(task, "report", "local-rag", "Источники сохранены отдельным артефактом.")
+        runModelExecutor(task, sources)
     }
 
     private suspend fun runAgentWorkflow(task: Task): Boolean {
         addStep(task, "research", "harness", "Подготовлен ограниченный контекст задачи.")
         addStep(task, "plan", "harness", "Построен план последовательности research → plan → execute → validate → report.")
-        if (task.mode == TaskMode.MAY_MODIFY) {
-            taskRepository.updateStatus(task.id, TaskStatus.WAITING_APPROVAL, now())
-            publish(task.id, EventLevel.WARNING, "approval.required", "Для выполнения изменяющего шага требуется явное подтверждение.")
-            return false
-        }
-        runReadOnlyExecutor(task)
+        val sources = sourceRepository.search(task.projectId, task.input)
+        runModelExecutor(task, sources)
         return true
     }
 
@@ -97,27 +90,47 @@ class TaskExecutor(
         if (jobs[taskId]?.isActive == true) return
         jobs[taskId] = scope.launch {
             runCatching {
-                val task = requireNotNull(taskRepository.find(taskId))
-                taskRepository.updateStatus(taskId, TaskStatus.RUNNING, now())
                 publish(taskId, EventLevel.INFO, "approval.accepted", "Подтверждение принято; выполняется разрешённый шаг.")
-                runReadOnlyExecutor(task)
-                taskRepository.updateStatus(taskId, TaskStatus.COMPLETED, now())
-                publish(taskId, EventLevel.INFO, "task.completed", "Задание завершено.")
+                execute(taskId)
             }.onFailure { error ->
                 if (error !is CancellationException) fail(taskId, error.message ?: "Неизвестная ошибка исполнения")
             }
         }
     }
 
-    private suspend fun runReadOnlyExecutor(task: Task) {
-        addStep(task, "execute", "code-agent", "Запущен read-only исполнитель.")
-        val result = agentRunner.run(task)
-        taskRepository.addArtifact(
-            Artifact(UUID.randomUUID().toString(), task.id, "agentReport", content = result.summary, createdAt = now()),
+    private suspend fun runModelExecutor(task: Task, sources: List<SourceDocument>) {
+        addStep(task, "execute", "model-provider", "Запущен выбранный провайдер модели.")
+        val result = modelProvider.complete(
+            requireNotNull(task.modelProfileId) { "Для задачи не выбран профиль модели." },
+            ModelCompletionRequest(
+                prompt = prompt(task, sources),
+                externalContextApproved = task.mode == TaskMode.MAY_MODIFY || task.pendingApprovalKind == null,
+            ),
         )
-        addStep(task, "validate", "harness", "Внешние команды и изменения не выполнялись.")
-        addStep(task, "report", "harness", "Отчёт исполнителя сохранён как артефакт.")
+        taskRepository.addArtifact(
+            Artifact(UUID.randomUUID().toString(), task.id, "modelReport", content = result.content, createdAt = now()),
+        )
+        addStep(task, "validate", "harness", "Ответ модели получен без запуска внешних команд.")
+        addStep(task, "report", "model-provider", "Ответ модели сохранён как артефакт.")
     }
+
+    private fun prompt(task: Task, sources: List<SourceDocument>): String = buildString {
+        appendLine("Ты помогаешь с инженерной задачей в проекте. Ответь по-русски, кратко и предметно.")
+        appendLine("Не предлагай выполнять команды, не публикуй результаты и не раскрывай секреты.")
+        appendLine("Отвечай только по проверенным фрагментам ниже. После каждого утверждения указывай источник в виде [путь:строки].")
+        appendLine("Если в источниках нет достаточного ответа, прямо скажи: «Не знаю: в найденной документации недостаточно информации.»")
+        appendLine()
+        appendLine("Задача:")
+        appendLine(task.input)
+        if (sources.isNotEmpty()) {
+            appendLine()
+            appendLine("Проверенные локальные фрагменты проекта:")
+            sources.forEach { source ->
+                appendLine("Файл ${source.path}:${source.lineStart}-${source.lineEnd}")
+                appendLine(source.content)
+            }
+        }
+    }.take(30_000)
 
     private suspend fun addStep(task: Task, stage: String, executor: String, result: String) {
         val time = now()

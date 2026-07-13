@@ -7,6 +7,7 @@ import org.jetbrains.exposed.v1.core.Table
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.SchemaUtils
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -19,13 +20,13 @@ class HarnessDatabase(databaseUrl: String) {
 
     init {
         transaction(database) {
-            SchemaMigrations.apply()
+            SchemaMigrations.apply(this)
         }
     }
 }
 
 private object SchemaMigrations {
-    fun apply() {
+    fun apply(transaction: JdbcTransaction) {
         SchemaUtils.create(SchemaVersionsTable)
         if (SchemaVersionsTable.selectAll().empty()) {
             SchemaUtils.create(
@@ -36,8 +37,20 @@ private object SchemaMigrations {
                 ArtifactsTable,
                 ApprovalsTable,
                 SourceDocumentsTable,
+                RagSourceChunksTable,
             )
-            SchemaVersionsTable.insert { it[version] = 1 }
+            SchemaVersionsTable.insert { it[version] = 3 }
+            return
+        }
+        val currentVersion = SchemaVersionsTable.selectAll().maxOf { it[SchemaVersionsTable.version] }
+        if (currentVersion < 2) {
+            transaction.exec("ALTER TABLE tasks ADD COLUMN model_profile_id VARCHAR(64)")
+            transaction.exec("ALTER TABLE tasks ADD COLUMN pending_approval_kind VARCHAR(64)")
+            SchemaVersionsTable.insert { it[version] = 2 }
+        }
+        if (currentVersion < 3) {
+            SchemaUtils.create(RagSourceChunksTable)
+            SchemaVersionsTable.insert { it[version] = 3 }
         }
     }
 }
@@ -64,6 +77,8 @@ private object TasksTable : Table("tasks") {
     val status = varchar("status", 64)
     val author = varchar("author", 256)
     val input = text("input")
+    val modelProfileId = varchar("model_profile_id", 64).nullable()
+    val pendingApprovalKind = varchar("pending_approval_kind", 64).nullable()
     val idempotencyKey = varchar("idempotency_key", 256).nullable().uniqueIndex()
     val createdAt = long("created_at")
     val updatedAt = long("updated_at")
@@ -126,6 +141,18 @@ private object SourceDocumentsTable : Table("source_documents") {
     override val primaryKey = PrimaryKey(projectId, path)
 }
 
+/** Version 3 keeps independent line chunks while preserving existing v2 source_documents data. */
+private object RagSourceChunksTable : Table("rag_source_chunks") {
+    val projectId = varchar("project_id", 64).index()
+    val path = varchar("path", 2048)
+    val revision = varchar("revision", 128)
+    val lineStart = integer("line_start")
+    val lineEnd = integer("line_end")
+    val sha256 = varchar("sha256", 128)
+    val content = text("content")
+    override val primaryKey = PrimaryKey(projectId, path, lineStart)
+}
+
 class ExposedProjectRepository(private val database: HarnessDatabase) : ProjectRepository {
     override suspend fun upsert(project: Project): Project = databaseQuery(database) {
         ProjectsTable.deleteWhere { ProjectsTable.id eq project.id }
@@ -158,6 +185,8 @@ class ExposedTaskRepository(private val database: HarnessDatabase) : TaskReposit
             it[status] = task.status.name
             it[author] = task.author
             it[input] = task.input
+            it[modelProfileId] = task.modelProfileId
+            it[pendingApprovalKind] = task.pendingApprovalKind?.name
             it[TasksTable.idempotencyKey] = idempotencyKey
             it[createdAt] = task.createdAt
             it[updatedAt] = task.updatedAt
@@ -180,6 +209,14 @@ class ExposedTaskRepository(private val database: HarnessDatabase) : TaskReposit
     override suspend fun updateStatus(id: String, status: TaskStatus, updatedAt: Long): Task = databaseQuery(database) {
         TasksTable.update({ TasksTable.id eq id }) {
             it[TasksTable.status] = status.name
+            it[TasksTable.updatedAt] = updatedAt
+        }
+        requireNotNull(TasksTable.selectAll().where { TasksTable.id eq id }.singleOrNull()?.let(::toTask))
+    }
+
+    override suspend fun updatePendingApproval(id: String, kind: ApprovalKind?, updatedAt: Long): Task = databaseQuery(database) {
+        TasksTable.update({ TasksTable.id eq id }) {
+            it[pendingApprovalKind] = kind?.name
             it[TasksTable.updatedAt] = updatedAt
         }
         requireNotNull(TasksTable.selectAll().where { TasksTable.id eq id }.singleOrNull()?.let(::toTask))
@@ -249,10 +286,10 @@ class ExposedTaskRepository(private val database: HarnessDatabase) : TaskReposit
 
 class ExposedSourceRepository(private val database: HarnessDatabase) : SourceRepository {
     override suspend fun replaceForProject(projectId: String, documents: List<SourceDocument>) = databaseQuery(database) {
-        SourceDocumentsTable.deleteWhere { SourceDocumentsTable.projectId eq projectId }
+        RagSourceChunksTable.deleteWhere { RagSourceChunksTable.projectId eq projectId }
         documents.forEach { document ->
-            SourceDocumentsTable.insert {
-                it[SourceDocumentsTable.projectId] = document.projectId
+            RagSourceChunksTable.insert {
+                it[RagSourceChunksTable.projectId] = document.projectId
                 it[path] = document.path
                 it[revision] = document.revision
                 it[lineStart] = document.lineStart
@@ -265,9 +302,9 @@ class ExposedSourceRepository(private val database: HarnessDatabase) : SourceRep
 
     override suspend fun search(projectId: String, query: String, limit: Int): List<SourceDocument> = databaseQuery(database) {
         val keywords = query.lowercase().split(Regex("\\s+")).filter { it.length >= 3 }.toSet()
-        SourceDocumentsTable.selectAll()
-            .where { SourceDocumentsTable.projectId eq projectId }
-            .map(::toSource)
+        RagSourceChunksTable.selectAll()
+            .where { RagSourceChunksTable.projectId eq projectId }
+            .map(::toRagSource)
             .map { source -> source to keywords.count { it in source.content.lowercase() } }
             .filter { it.second > 0 }
             .sortedByDescending { it.second }
@@ -288,6 +325,8 @@ private fun toTask(row: org.jetbrains.exposed.v1.core.ResultRow) = Task(
     id = row[TasksTable.id], projectId = row[TasksTable.projectId], scenario = TaskScenario.valueOf(row[TasksTable.scenario]),
     mode = TaskMode.valueOf(row[TasksTable.mode]), status = TaskStatus.valueOf(row[TasksTable.status]),
     author = row[TasksTable.author], input = row[TasksTable.input], createdAt = row[TasksTable.createdAt], updatedAt = row[TasksTable.updatedAt],
+    modelProfileId = row[TasksTable.modelProfileId],
+    pendingApprovalKind = row[TasksTable.pendingApprovalKind]?.let(ApprovalKind::valueOf),
 )
 
 private fun toEvent(row: org.jetbrains.exposed.v1.core.ResultRow) = TaskEvent(
@@ -301,7 +340,7 @@ private fun toArtifact(row: org.jetbrains.exposed.v1.core.ResultRow) = Artifact(
     path = row[ArtifactsTable.path], content = row[ArtifactsTable.content], sha256 = row[ArtifactsTable.sha256], createdAt = row[ArtifactsTable.createdAt],
 )
 
-private fun toSource(row: org.jetbrains.exposed.v1.core.ResultRow) = SourceDocument(
-    projectId = row[SourceDocumentsTable.projectId], path = row[SourceDocumentsTable.path], revision = row[SourceDocumentsTable.revision],
-    lineStart = row[SourceDocumentsTable.lineStart], lineEnd = row[SourceDocumentsTable.lineEnd], sha256 = row[SourceDocumentsTable.sha256], content = row[SourceDocumentsTable.content],
+private fun toRagSource(row: org.jetbrains.exposed.v1.core.ResultRow) = SourceDocument(
+    projectId = row[RagSourceChunksTable.projectId], path = row[RagSourceChunksTable.path], revision = row[RagSourceChunksTable.revision],
+    lineStart = row[RagSourceChunksTable.lineStart], lineEnd = row[RagSourceChunksTable.lineEnd], sha256 = row[RagSourceChunksTable.sha256], content = row[RagSourceChunksTable.content],
 )

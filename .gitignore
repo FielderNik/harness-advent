@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+harness.local.properties
 *.pem
 *.key
 *.p12

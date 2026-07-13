@@ -1,0 +1,37 @@
+# Скопируй в harness.local.properties. Этот локальный файл игнорируется Git.
+server.databaseUrl=jdbc:sqlite:./harness-advent.db
+# Абсолютные пути к рабочим копиям через запятую.
+HARNESS_ALLOWED_PROJECTS=
+
+# Локальная OpenAI-compatible модель, например Ollama с включённым /v1 API.
+models.local.endpoint=http://127.0.0.1:11434/v1
+models.local.token=
+models.local.models=qwen3:4b
+models.local.timeoutSeconds=60
+
+# Облачные провайдеры: укажи реальные токены только в harness.local.properties.
+models.deepseek.endpoint=https://api.deepseek.com/v1
+models.deepseek.token=
+models.deepseek.models=deepseek-chat
+models.deepseek.timeoutSeconds=60
+
+models.openrouter.endpoint=https://openrouter.ai/api/v1
+models.openrouter.token=
+models.openrouter.models=deepseek/deepseek-chat
+models.openrouter.timeoutSeconds=60
+
+# Реестр MCP. Можно перечислить несколько идентификаторов через запятую.
+# GitHub ниже использует официальный образ ghcr.io/github/github-mcp-server.
+# Создай fine-grained PAT только для одного репозитория и с правами read-only;
+# реальный токен указывай лишь в локальном harness.local.properties.
+mcp.servers=github
+mcp.github.name=GitHub (только чтение)
+mcp.github.command=docker
+mcp.github.arguments=run,-i,--rm,-e,GITHUB_PERSONAL_ACCESS_TOKEN,-e,GITHUB_READ_ONLY,-e,GITHUB_TOOLSETS,ghcr.io/github/github-mcp-server
+mcp.github.readOnly=true
+mcp.github.allowedRepositories=owner/repository
+mcp.github.allowedTools=get_file_contents,search_code,issue_read,pull_request_read
+mcp.github.timeoutSeconds=30
+mcp.github.env.GITHUB_PERSONAL_ACCESS_TOKEN=
+mcp.github.env.GITHUB_READ_ONLY=1
+mcp.github.env.GITHUB_TOOLSETS=repos,issues,pull_requests

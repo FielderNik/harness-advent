@@ -1,24 +1,27 @@
 package com.harnessadvent.api
 
 import com.harnessadvent.application.ModelProfileService
+import com.harnessadvent.application.HelpCommandService
+import com.harnessadvent.application.McpService
 import com.harnessadvent.application.ProjectService
 import com.harnessadvent.application.TaskService
 import com.harnessadvent.domain.*
 import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.json
+import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import io.ktor.server.plugins.callid.*
+import io.ktor.server.plugins.calllogging.*
 import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.plugins.statuspages.*
-import io.ktor.server.request.receive
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.koin.ktor.ext.inject
-import java.util.UUID
+import java.util.*
 
 @Serializable
 data class ApiError(val code: String, val message: String, val requestId: String)
@@ -35,10 +38,17 @@ data class TaskCreateRequest(
     val scenario: TaskScenario,
     val mode: TaskMode,
     val input: String,
+    val modelProfileId: String,
 )
 
 @Serializable
 data class ApprovalCreateRequest(val kind: ApprovalKind, val decision: ApprovalDecision)
+
+@Serializable
+data class HelpCommandRequest(val projectId: String, val command: String, val modelProfileId: String)
+
+@Serializable
+data class McpToolCallRequest(val arguments: JsonObject = JsonObject(emptyMap()))
 
 fun Application.configureMonitoring() {
     install(CallId) {
@@ -46,6 +56,13 @@ fun Application.configureMonitoring() {
         generate { UUID.randomUUID().toString() }
         verify { it.length in 1..128 }
         replyToHeader(HttpHeaders.XRequestId)
+    }
+    install(CallLogging) {
+        format { call ->
+            val status = call.response.status()?.value ?: 0
+            val requestId = call.callId ?: "unknown"
+            "HTTP ${call.request.httpMethod.value} ${call.request.path()} -> $status requestId=$requestId"
+        }
     }
 }
 
@@ -63,6 +80,9 @@ fun Application.configureApi() {
     val projectService by inject<ProjectService>()
     val taskService by inject<TaskService>()
     val modelProfileService by inject<ModelProfileService>()
+    val modelProvider by inject<ModelProvider>()
+    val helpCommandService by inject<HelpCommandService>()
+    val mcpService by inject<McpService>()
     val json = Json { explicitNulls = false }
     val logger = log
 
@@ -72,6 +92,9 @@ fun Application.configureApi() {
         }
         exception<NoSuchElementException> { call, cause ->
             call.respondError(HttpStatusCode.NotFound, "not_found", cause.message ?: "Ресурс не найден.")
+        }
+        exception<ModelProviderException> { call, cause ->
+            call.respondError(HttpStatusCode.BadGateway, "model_unavailable", cause.message ?: "Модель временно недоступна.")
         }
         exception<Throwable> { call, cause ->
             logger.error("Необработанная ошибка requestId=${call.callId}", cause)
@@ -83,6 +106,31 @@ fun Application.configureApi() {
         get("/health") { call.respond(HealthResponse()) }
 
         route("/api/v1") {
+            route("/assistant") {
+                post("/commands") {
+                    val request = call.receive<HelpCommandRequest>()
+                    val task = helpCommandService.execute(
+                        projectId = request.projectId,
+                        command = request.command,
+                        modelProfileId = request.modelProfileId,
+                        author = call.actor(),
+                        idempotencyKey = call.request.headers["Idempotency-Key"],
+                    )
+                    call.respond(HttpStatusCode.Accepted, task)
+                }
+            }
+
+            route("/mcp/servers") {
+                get { call.respond(mcpService.servers()) }
+                get("/{id}/tools") { call.respond(mcpService.tools(call.requiredId())) }
+                post("/{id}/tools/{toolName}") {
+                    val serverId = call.requiredId()
+                    val toolName = requireNotNull(call.parameters["toolName"]?.takeIf { it.isNotBlank() }) { "Имя MCP-инструмента обязательно." }
+                    val request = call.receive<McpToolCallRequest>()
+                    call.respond(mcpService.call(serverId, toolName, request.arguments))
+                }
+            }
+
             route("/projects") {
                 get { call.respond(projectService.list()) }
                 post {
@@ -102,6 +150,7 @@ fun Application.configureApi() {
                         scenario = request.scenario,
                         mode = request.mode,
                         input = request.input,
+                        modelProfileId = request.modelProfileId,
                         author = call.actor(),
                         idempotencyKey = call.request.headers["Idempotency-Key"],
                     )
@@ -134,6 +183,16 @@ fun Application.configureApi() {
             route("/model-profiles") {
                 get { call.respond(modelProfileService.list()) }
                 get("/{id}/models") { call.respond(modelProfileService.find(call.requiredId()).models) }
+                get("/{id}/health") {
+                    val profileId = call.requiredId()
+                    modelProfileService.find(profileId)
+                    call.respond(modelProvider.health(profileId))
+                }
+                post("/{id}/completions") {
+                    val profileId = call.requiredId()
+                    modelProfileService.find(profileId)
+                    call.respond(modelProvider.complete(profileId, call.receive<ModelCompletionRequest>()))
+                }
             }
         }
     }

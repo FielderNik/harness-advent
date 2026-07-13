@@ -49,6 +49,8 @@ data class Task(
     val input: String,
     val createdAt: Long,
     val updatedAt: Long,
+    val modelProfileId: String? = null,
+    val pendingApprovalKind: ApprovalKind? = null,
 )
 
 @Serializable

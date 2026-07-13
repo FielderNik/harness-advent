@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "noEmit": false,
+    "outDir": ".test-dist",
+    "rootDir": "src",
+    "types": ["vite/client"]
+  },
+  "include": ["src/api/types.ts", "src/api/client.ts", "src/features/tasks/taskState.ts"]
+}
