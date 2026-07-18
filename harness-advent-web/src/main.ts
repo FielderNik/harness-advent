@@ -277,7 +277,7 @@ function tabContent(task: Task) {
   if (tab === "timeline") return timelineContent();
   if (tab === "plan") return artifactContent(tabArtifacts("modelReport"), "План пока не сохранён отдельным артефактом.", "План и стадии сервера появятся здесь по мере развития API.");
   if (tab === "sources") return artifactContent(tabArtifacts("ragSources"), "Источники ещё не получены.", "Для поиска сначала отсканируйте проект и создайте задачу поиска.");
-  if (tab === "report") return artifactContent(tabArtifacts("modelReport"), "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
+  if (tab === "report") return artifactContent([...tabArtifacts("modelReport"), ...tabArtifacts("codeReviewReport")], "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
   if (tab === "changes") return unavailableArtifact("Изменения рабочей копии", "Текущий безопасный серверный адаптер не изменяет файлы. Когда появятся diff-артефакты, они будут отображены здесь.");
   return unavailableArtifact("Проверки", "Текущий безопасный серверный адаптер не запускает внешние команды. Проверки и их логи будут доступны отдельными артефактами.");
 }

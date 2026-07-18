@@ -3,6 +3,14 @@ server.databaseUrl=jdbc:sqlite:./harness-advent.db
 # Абсолютные пути к рабочим копиям через запятую.
 HARNESS_ALLOWED_PROJECTS=
 
+# GitHub Action передаёт этот секрет в Authorization: Bearer. Оставь пустым,
+# пока endpoint /api/v1/code-reviews не должен быть доступен.
+codeReview.apiToken=
+# Только для CI code review: перечисли через запятую облачные профили, которым
+# разрешено получить diff и RAG-контекст без ручного contextTransfer approval.
+# Для автоматического DeepSeek-ревью укажи: deepseek
+codeReview.autoApproveContextProfiles=
+
 # Локальная OpenAI-compatible модель, например Ollama с включённым /v1 API.
 models.local.endpoint=http://127.0.0.1:11434/v1
 models.local.token=

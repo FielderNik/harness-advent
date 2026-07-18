@@ -21,7 +21,7 @@ fun harnessModule(config: HarnessConfig, modelProviderOverride: ModelProvider? =
     single { TaskEventStream() }
     single { TaskExecutor(get(), get(), get(), get()) }
     single { ProjectService(get(), get(), get(), get()) }
-    single { TaskService(get(), get(), get(), get(), get()) }
+    single { TaskService(get(), get(), get(), get(), get(), config.codeReviewAutoApprovedContextProfiles) }
     single { ModelProfileService(config.modelProfiles) }
     single { HelpCommandService(get()) }
     single { McpService(get()) }

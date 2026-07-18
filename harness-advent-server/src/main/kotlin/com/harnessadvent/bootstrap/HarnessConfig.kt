@@ -39,6 +39,8 @@ data class HarnessConfig(
     val modelProfiles: List<ModelProfile>,
     val modelConnections: Map<String, ModelConnection> = emptyMap(),
     val mcpServers: List<McpServerConnection> = emptyList(),
+    val codeReviewApiToken: String? = null,
+    val codeReviewAutoApprovedContextProfiles: Set<String> = emptySet(),
 ) {
     companion object {
         private const val DEFAULT_CONFIG_FILE = "harness.local.properties"
@@ -71,6 +73,11 @@ data class HarnessConfig(
                 .map { Path.of(it).toAbsolutePath().normalize() }
                 .toSet()
             val connections = modelIds.associateWith { id -> modelConnection(properties, id) }
+            val autoApprovedProfiles = properties.getProperty("codeReview.autoApproveContextProfiles").orEmpty()
+                .split(',').map(String::trim).filter(String::isNotEmpty).toSet()
+            require(autoApprovedProfiles.all { it in modelIds - "local" }) {
+                "Автоподтверждение передачи контекста для code review доступно только облачным профилям: ${modelIds.filter { it != "local" }.joinToString()}."
+            }
             val mcpServers = properties.getProperty("mcp.servers").orEmpty()
                 .split(',')
                 .map(String::trim)
@@ -83,6 +90,8 @@ data class HarnessConfig(
                 modelProfiles = modelIds.map { id -> connections.getValue(id).toPublicProfile(providerName(id)) },
                 modelConnections = connections,
                 mcpServers = mcpServers,
+                codeReviewApiToken = properties.getProperty("codeReview.apiToken")?.trim()?.takeIf(String::isNotEmpty),
+                codeReviewAutoApprovedContextProfiles = autoApprovedProfiles,
             )
         }
 

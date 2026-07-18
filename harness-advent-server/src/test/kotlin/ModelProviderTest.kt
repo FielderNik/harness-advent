@@ -49,6 +49,15 @@ class ModelProviderTest {
     }
 
     @Test
+    fun `reads the cloud code review auto approval profile list`() {
+        val config = HarnessConfig.fromProperties(Properties().apply {
+            setProperty("codeReview.autoApproveContextProfiles", "deepseek")
+        })
+
+        assertEquals(setOf("deepseek"), config.codeReviewAutoApprovedContextProfiles)
+    }
+
+    @Test
     fun `GitHub MCP injects the configured repository and rejects another one`() {
         val connection = McpServerConnection(
             id = "github", name = "GitHub", command = "docker", arguments = listOf("run"), environment = emptyMap(),

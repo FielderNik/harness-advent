@@ -5,7 +5,7 @@
 ## Что реализовано
 
 - `SQLite` + `Exposed`: версионируемая схема для проектов, заданий, шагов, событий, артефактов, approvals и локальных RAG-фрагментов;
-- регистрация только каталогов из `HARNESS_ALLOWED_PROJECTS`, безопасное сканирование README, `docs/` и API-описаний без `.git`, `.env`, ключей, build-артефактов и бинарных файлов;
+- регистрация только каталогов из `HARNESS_ALLOWED_PROJECTS`, безопасное сканирование README, `docs/`, API-описаний и исходного кода без `.git`, `.env`, ключей, build-артефактов и бинарных файлов;
 - состояния задания `QUEUED`, `RUNNING`, `WAITING_APPROVAL`, `COMPLETED`, `FAILED`, `CANCELLED`, отмена и ключ идемпотентности;
 - события в SQLite и поток `/events` в формате SSE;
 - артефакты RAG с точными путями, диапазонами строк и хешами;
@@ -29,6 +29,8 @@ CodeAgent и Git-публикация по умолчанию отключены
 | `mcp.<id>.command`, `arguments` | Команда и аргументы MCP без shell-интерпретации |
 | `mcp.<id>.allowedTools` | Точный allowlist MCP-инструментов |
 | `mcp.<id>.readOnly` | Обязательный read-only режим для GitHub MCP |
+| `codeReview.apiToken` | Секрет Bearer-аутентификации endpoint для GitHub Action |
+| `codeReview.autoApproveContextProfiles` | Облачные профили через запятую, которым code review может передавать контекст без ручного approval |
 
 ## API
 
@@ -42,6 +44,7 @@ CodeAgent и Git-публикация по умолчанию отключены
 - `POST /model-profiles/{id}/completions` для OpenAI-compatible `chat/completions`.
 - `POST /assistant/commands` для `/help <вопрос>`;
 - `GET /mcp/servers`, `GET /mcp/servers/{id}/tools`, `POST /mcp/servers/{id}/tools/{toolName}`.
+- `POST /code-reviews` для CI-ревью; требует `Authorization: Bearer <codeReview.apiToken>`.
 
 Создание задания принимает `projectId`, `scenario` (`ragQuestion`, `codeReview`, `agentWorkflow`), `mode` (`readOnly`, `mayModify`), `modelProfileId` и `input`. Состояния возвращаются как `queued`, `running`, `waitingApproval`, `completed`, `failed` или `cancelled`. Повторная отправка с одинаковым заголовком `Idempotency-Key` возвращает существующее задание. `X-Actor` — только локальная аудиторская метка, а не механизм аутентификации.
 
@@ -52,6 +55,10 @@ CodeAgent и Git-публикация по умолчанию отключены
 `POST /assistant/commands` принимает `projectId`, `command` и `modelProfileId`; в текущей версии поддерживается только `/help`. Команда создаёт обычную `ragQuestion` в режиме `readOnly`. Ответ модели должен ссылаться на переданные фрагменты документации, а точные источники остаются в `ragSources`-артефакте.
 
 MCP остаётся отдельной read-only интеграцией и не вызывается автоматически из `/help`. Для GitHub используй официальный образ, `GITHUB_READ_ONLY=1`, один разрешённый репозиторий и fine-grained PAT с доступом только к нему. Полный пример находится в `harness.local.properties.example`, правила — в [docs/mcp.md](../docs/mcp.md).
+
+### CI code review
+
+`POST /code-reviews` принимает `projectId`, `modelProfileId`, `repository`, данные PR, `diff` и `changedFiles`. Сервер создаёт фоновую read-only задачу `codeReview`, сохраняет входные данные и RAG-контекст как артефакты, а итог модели — как `codeReviewReport`. Endpoint отключён, пока в конфигурации отсутствует `codeReview.apiToken`. Шаблон workflow копируется в целевой GitHub-репозиторий; полный способ настройки находится в [docs/code-review.md](../docs/code-review.md).
 
 ### Выполнение задачи через модель
 

@@ -24,12 +24,12 @@ class SafeProjectScanner {
     fun scan(projectId: String, root: Path): List<SourceDocument> =
         Files.walk(root, 16).use { paths ->
             paths.asSequence()
-                .filter { it.isRegularFile() && isDocumentationSource(it, root) && it.fileSize() <= MAX_FILE_SIZE_BYTES }
+                .filter { it.isRegularFile() && isIndexableSource(it, root) && it.fileSize() <= MAX_FILE_SIZE_BYTES }
                 .flatMap { path -> readSources(projectId, root, path).asSequence() }
                 .toList()
         }
 
-    private fun isDocumentationSource(path: Path, root: Path): Boolean {
+    private fun isIndexableSource(path: Path, root: Path): Boolean {
         val relative = root.relativize(path).toString().replace('\\', '/')
         val segments = relative.split('/')
         if (segments.any { it in IGNORED_DIRECTORIES }) return false
@@ -42,7 +42,8 @@ class SafeProjectScanner {
         val isDocumentation = segments.firstOrNull() == "docs"
         val isApiDescription = name.startsWith("openapi") || name.startsWith("swagger") ||
             (segments.any { it in API_DIRECTORIES } && name.endsWithAny(".md", ".yaml", ".yml", ".json"))
-        return isRootReadme || isDocumentation || isApiDescription
+        val isCode = path.name.substringAfterLast('.', missingDelimiterValue = "").lowercase() in SOURCE_EXTENSIONS
+        return isRootReadme || isDocumentation || isApiDescription || isCode
     }
 
     private fun readSources(projectId: String, root: Path, path: Path): List<SourceDocument> = runCatching {
@@ -72,6 +73,10 @@ class SafeProjectScanner {
         const val CHUNK_LINES = 80
         val IGNORED_DIRECTORIES = setOf(".git", ".gradle", "build", "out", "node_modules", ".idea", "rag-index", "logs")
         val API_DIRECTORIES = setOf("api", "schemas", "schema", "contracts")
+        val SOURCE_EXTENSIONS = setOf(
+            "kt", "kts", "java", "ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php", "cs", "swift",
+            "c", "cc", "cpp", "h", "hpp", "sql", "xml", "html", "css", "scss",
+        )
     }
 }
 

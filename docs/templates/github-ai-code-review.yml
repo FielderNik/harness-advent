@@ -1,0 +1,144 @@
+# Скопируй этот файл в <целевой-репозиторий>/.github/workflows/ai-code-review.yml.
+# Harness Advent остаётся внешним сервисом и не обязан быть тем репозиторием,
+# в котором создаётся pull request.
+name: AI code review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Секреты недоступны для PR из fork. Такой PR не отправляется на внешний Harness.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HARNESS_API_URL: ${{ secrets.HARNESS_API_URL }}
+      HARNESS_CODE_REVIEW_TOKEN: ${{ secrets.HARNESS_CODE_REVIEW_TOKEN }}
+      HARNESS_PROJECT_ID: ${{ secrets.HARNESS_PROJECT_ID }}
+      HARNESS_MODEL_PROFILE: ${{ vars.HARNESS_MODEL_PROFILE || 'local' }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Collect PR diff and changed files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git diff --no-ext-diff --unified=30 "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/pr.diff"
+          # The server accepts at most 200000 characters. Keep a safe margin for JSON transport.
+          if [ "$(wc -c < "$RUNNER_TEMP/pr.diff")" -gt 180000 ]; then
+            head -c 180000 "$RUNNER_TEMP/pr.diff" > "$RUNNER_TEMP/pr.diff.truncated"
+            printf '\n[diff truncated by GitHub Action]\n' >> "$RUNNER_TEMP/pr.diff.truncated"
+            mv "$RUNNER_TEMP/pr.diff.truncated" "$RUNNER_TEMP/pr.diff"
+          fi
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100" \
+            | jq -s 'flatten | map({path: .filename, status: .status, previousPath: .previous_filename}) | .[:300]' \
+            > "$RUNNER_TEMP/changed-files.json"
+
+      - name: Start review in Harness
+        id: start-review
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          : "${HARNESS_API_URL:?Set repository secret HARNESS_API_URL}"
+          : "${HARNESS_CODE_REVIEW_TOKEN:?Set repository secret HARNESS_CODE_REVIEW_TOKEN}"
+          : "${HARNESS_PROJECT_ID:?Set repository secret HARNESS_PROJECT_ID}"
+          jq -n \
+            --arg projectId "$HARNESS_PROJECT_ID" \
+            --arg modelProfileId "$HARNESS_MODEL_PROFILE" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson pullRequestNumber "$PR_NUMBER" \
+            --arg pullRequestTitle "$PR_TITLE" \
+            --arg headSha "$HEAD_SHA" \
+            --rawfile diff "$RUNNER_TEMP/pr.diff" \
+            --slurpfile changedFiles "$RUNNER_TEMP/changed-files.json" \
+            '{projectId: $projectId, modelProfileId: $modelProfileId, repository: $repository, pullRequestNumber: $pullRequestNumber, pullRequestTitle: $pullRequestTitle, headSha: $headSha, diff: $diff, changedFiles: $changedFiles[0]}' \
+            > "$RUNNER_TEMP/code-review-request.json"
+          response="$(curl --fail --silent --show-error \
+            --request POST "$HARNESS_API_URL/api/v1/code-reviews" \
+            --header "Authorization: Bearer $HARNESS_CODE_REVIEW_TOKEN" \
+            --header "Content-Type: application/json" \
+            --header "Idempotency-Key: github-pr-$GITHUB_REPOSITORY-$PR_NUMBER-$HEAD_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --data-binary "@$RUNNER_TEMP/code-review-request.json")"
+          task_id="$(jq -er '.id' <<< "$response")"
+          echo "task_id=$task_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for review and publish pull request review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TASK_ID: ${{ steps.start-review.outputs.task_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 90); do
+            task="$(curl --fail --silent --show-error "$HARNESS_API_URL/api/v1/tasks/$TASK_ID")"
+            status="$(jq -er '.status' <<< "$task")"
+            case "$status" in
+              completed) break ;;
+              failed|cancelled)
+                echo "Harness review finished with status: $status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 2
+          done
+          if [ "${status:-timeout}" != "completed" ]; then
+            echo "Harness review did not finish within three minutes." >&2
+            exit 1
+          fi
+          curl --fail --silent --show-error "$HARNESS_API_URL/api/v1/tasks/$TASK_ID/artifacts" \
+            | jq -er 'map(select(.type == "githubReview")) | last | .content' \
+            > "$RUNNER_TEMP/github-review.json"
+          jq -e '
+            type == "object" and
+            (.summary | type == "string" and length > 0) and
+            (.comments | type == "array") and
+            all(.comments[]; (.path | type == "string") and (.line | type == "number") and (.severity | type == "string") and (.body | type == "string"))
+          ' "$RUNNER_TEMP/github-review.json" > /dev/null
+
+          marker="<!-- harness-review:v1:$HEAD_SHA -->"
+          if gh api --paginate "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews?per_page=100" \
+            | jq -e -s --arg marker "$marker" --arg head "$HEAD_SHA" \
+              'flatten | any(.[]; .commit_id == $head and ((.body // "") | contains($marker)))' > /dev/null; then
+            echo "Harness review for this commit has already been published." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          review_body="$(jq -r '.summary' "$RUNNER_TEMP/github-review.json")"
+          review_body+=$'\n\n'"$marker"
+          jq --arg body "$review_body" --arg head "$HEAD_SHA" '
+            {
+              body: $body,
+              event: "COMMENT",
+              commit_id: $head,
+              comments: [
+                .comments[] | {
+                  path: .path,
+                  line: .line,
+                  side: "RIGHT",
+                  body: ("**" + .severity + "** — " + .body)
+                }
+              ]
+            } | if .comments == [] then del(.comments) else . end
+          ' "$RUNNER_TEMP/github-review.json" > "$RUNNER_TEMP/github-review-payload.json"
+          gh api --method POST "/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews" \
+            --input "$RUNNER_TEMP/github-review-payload.json" > /dev/null
+          echo "Harness review has been published in this pull request." >> "$GITHUB_STEP_SUMMARY"

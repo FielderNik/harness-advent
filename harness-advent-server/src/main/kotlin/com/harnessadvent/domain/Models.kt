@@ -126,6 +126,45 @@ data class SourceDocument(
     val content: String,
 )
 
+/**
+ * Immutable PR data received from CI. The diff and file names are treated as untrusted input,
+ * not as instructions for the model.
+ */
+@Serializable
+data class CodeReviewInput(
+    val repository: String,
+    val pullRequestNumber: Int,
+    val pullRequestTitle: String,
+    val headSha: String,
+    val diff: String,
+    val changedFiles: List<ChangedFile>,
+)
+
+@Serializable
+data class ChangedFile(
+    val path: String,
+    val status: String,
+    val previousPath: String? = null,
+)
+
+/**
+ * Результат ревью, который GitHub Action может опубликовать одним pull request review.
+ * [comments] содержат только позиции правой стороны переданного diff.
+ */
+@Serializable
+data class GitHubReview(
+    val summary: String,
+    val comments: List<GitHubReviewComment> = emptyList(),
+)
+
+@Serializable
+data class GitHubReviewComment(
+    val path: String,
+    val line: Int,
+    val severity: String,
+    val body: String,
+)
+
 @Serializable
 enum class ContextPolicy { LOCAL_ONLY, METADATA_ONLY, SELECTED_SOURCES, APPROVED_TASK_CONTEXT }
 

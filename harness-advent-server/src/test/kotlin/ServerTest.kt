@@ -14,6 +14,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.*
 import io.ktor.server.testing.*
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
@@ -59,7 +60,7 @@ class ServerTest {
         }
         val artifacts = client.get("/api/v1/tasks/$taskId/artifacts").bodyAsText()
         assertContains(artifacts, "README.md")
-        assertFalse(artifacts.contains("Example.kt"))
+        assertContains(artifacts, "Example.kt")
     }
 
     @Test
@@ -146,6 +147,115 @@ class ServerTest {
         eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
     }
 
+    @Test
+    fun `CI code review receives diff files and RAG context`() = testApplication {
+        val repository = Files.createTempDirectory("harness-project")
+        Files.writeString(repository.resolve("README.md"), "# Fixture\n\nDo not return null from public APIs.")
+        Files.writeString(repository.resolve("Example.kt"), "package test\nclass Example { fun answer() = 42 }")
+        var reviewPrompt = ""
+        val reviewModelProvider = object : ModelProvider {
+            override suspend fun health(profileId: String) = ModelProviderHealth(profileId, true, "test")
+
+            override suspend fun complete(profileId: String, request: ModelCompletionRequest): ModelCompletionResult {
+                reviewPrompt = request.prompt
+                return ModelCompletionResult(
+                    profileId, "test-model",
+                    """{"summary":"## Потенциальные баги\nНайдено замечание.\n\n## Архитектурные проблемы\nНет.\n\n## Рекомендации\nНет.","comments":[{"path":"Example.kt","line":1,"severity":"high","body":"Возвращается null."},{"path":"Example.kt","line":99,"severity":"low","body":"apiKey=must-not-leak"}]}""",
+                )
+            }
+        }
+        application { moduleForTests(testConfig(repository), reviewModelProvider) }
+        val projectId = createProject(client, repository)
+        client.post("/api/v1/projects/$projectId/scan")
+
+        val response = client.post("/api/v1/code-reviews") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.Authorization, "Bearer test-review-token")
+            header("Idempotency-Key", "pr-7-deadbeef")
+            setBody(
+                """{"projectId":"$projectId","modelProfileId":"local","repository":"owner/repository","pullRequestNumber":7,"pullRequestTitle":"Fix answer","headSha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","diff":"diff --git a/Example.kt b/Example.kt\n@@ -1,2 +1,2 @@\n-class Example { fun answer() = 42 }\n+class Example { fun answer(): Int? = null }","changedFiles":[{"path":"Example.kt","status":"M"}]}""",
+            )
+        }
+
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val taskId = Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
+        val artifacts = client.get("/api/v1/tasks/$taskId/artifacts").bodyAsText()
+        assertContains(artifacts, "prDiff")
+        assertContains(artifacts, "changedFiles")
+        assertContains(artifacts, "reviewSources")
+        assertContains(artifacts, "Example.kt")
+        assertContains(artifacts, "codeReviewReport")
+        assertContains(artifacts, "githubReview")
+        val githubReviewContent = Json.parseToJsonElement(artifacts).jsonArray
+            .first { it.jsonObject["type"]?.jsonPrimitive?.content == "githubReview" }
+            .jsonObject["content"]!!.jsonPrimitive.content
+        val githubReview = Json.parseToJsonElement(githubReviewContent).jsonObject
+        assertEquals(1, assertNotNull(githubReview["comments"], githubReviewContent).jsonArray.size)
+        assertFalse(githubReviewContent.contains("must-not-leak"))
+        assertContains(githubReview["summary"]!!.jsonPrimitive.content, "Замечания без привязки к строке")
+        assertContains(reviewPrompt, "JSON-объект")
+        assertContains(reviewPrompt, "Example.kt")
+        assertContains(reviewPrompt, "Релевантный контекст RAG")
+    }
+
+    @Test
+    fun `CI code review rejects a missing token`() = testApplication {
+        application { moduleForTests(testConfig(), testModelProvider) }
+
+        val response = client.post("/api/v1/code-reviews") {
+            contentType(ContentType.Application.Json)
+            setBody("{}")
+        }
+
+        assertEquals(HttpStatusCode.Unauthorized, response.status)
+    }
+
+    @Test
+    fun `CI code review redacts GitHub secret references before storing and sending context`() = testApplication {
+        val repository = Files.createTempDirectory("harness-project")
+        application { moduleForTests(testConfig(repository), testModelProvider) }
+        val projectId = createProject(client, repository)
+        val githubSecretReference = "${'$'}{{ secrets.HARNESS_CODE_REVIEW_TOKEN }}"
+
+        val response = client.post("/api/v1/code-reviews") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.Authorization, "Bearer test-review-token")
+            setBody(
+                """{"projectId":"$projectId","modelProfileId":"local","repository":"owner/repository","pullRequestNumber":9,"pullRequestTitle":"Workflow","headSha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","diff":"diff --git a/workflow.yml b/workflow.yml\n+ HARNESS_CODE_REVIEW_TOKEN: $githubSecretReference","changedFiles":[{"path":"workflow.yml","status":"M"}]}""",
+            )
+        }
+
+        val taskId = Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
+        val artifacts = client.get("/api/v1/tasks/$taskId/artifacts").bodyAsText()
+        assertFalse(artifacts.contains("HARNESS_CODE_REVIEW_TOKEN"))
+        assertContains(artifacts, "sensitive-setting")
+    }
+
+    @Test
+    fun `configured DeepSeek code review skips manual context approval`() = testApplication {
+        val repository = Files.createTempDirectory("harness-project")
+        val config = testConfig(repository).copy(codeReviewAutoApprovedContextProfiles = setOf("deepseek"))
+        application { moduleForTests(config, testModelProvider) }
+        val projectId = createProject(client, repository)
+
+        val response = client.post("/api/v1/code-reviews") {
+            contentType(ContentType.Application.Json)
+            header(HttpHeaders.Authorization, "Bearer test-review-token")
+            setBody(
+                """{"projectId":"$projectId","modelProfileId":"deepseek","repository":"owner/repository","pullRequestNumber":8,"pullRequestTitle":"Cloud review","headSha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","diff":"diff --git a/Example.kt b/Example.kt\n@@ -1 +1 @@\n+class Example","changedFiles":[{"path":"Example.kt","status":"A"}]}""",
+            )
+        }
+
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val taskBody = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        assertNotEquals("waitingApproval", taskBody["status"]?.jsonPrimitive?.content)
+        assertFalse(taskBody.containsKey("pendingApprovalKind"))
+        val taskId = taskBody["id"]!!.jsonPrimitive.content
+        eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
+    }
+
     private suspend fun createProject(client: io.ktor.client.HttpClient, repository: java.nio.file.Path): String {
         val response = client.post("/api/v1/projects") {
             contentType(ContentType.Application.Json)
@@ -161,6 +271,7 @@ class ServerTest {
             ModelProfile("local", "test", true, emptyList(), ContextPolicy.LOCAL_ONLY, emptySet()),
             ModelProfile("deepseek", "test", true, emptyList(), ContextPolicy.APPROVED_TASK_CONTEXT, emptySet()),
         ),
+        codeReviewApiToken = "test-review-token",
     )
 
     private suspend fun eventually(predicate: suspend () -> Boolean) {

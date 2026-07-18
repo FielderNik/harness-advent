@@ -5,6 +5,7 @@ import com.harnessadvent.application.HelpCommandService
 import com.harnessadvent.application.McpService
 import com.harnessadvent.application.ProjectService
 import com.harnessadvent.application.TaskService
+import com.harnessadvent.bootstrap.HarnessConfig
 import com.harnessadvent.domain.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
@@ -16,11 +17,13 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.util.cio.ChannelWriteException
 import kotlinx.coroutines.flow.filter
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.koin.ktor.ext.inject
+import java.security.MessageDigest
 import java.util.*
 
 @Serializable
@@ -40,6 +43,27 @@ data class TaskCreateRequest(
     val input: String,
     val modelProfileId: String,
 )
+
+@Serializable
+data class CodeReviewCreateRequest(
+    val projectId: String,
+    val modelProfileId: String,
+    val repository: String,
+    val pullRequestNumber: Int,
+    val pullRequestTitle: String,
+    val headSha: String,
+    val diff: String,
+    val changedFiles: List<ChangedFile>,
+) {
+    fun toDomain() = CodeReviewInput(
+        repository = repository,
+        pullRequestNumber = pullRequestNumber,
+        pullRequestTitle = pullRequestTitle,
+        headSha = headSha,
+        diff = diff,
+        changedFiles = changedFiles,
+    )
+}
 
 @Serializable
 data class ApprovalCreateRequest(val kind: ApprovalKind, val decision: ApprovalDecision)
@@ -83,6 +107,7 @@ fun Application.configureApi() {
     val modelProvider by inject<ModelProvider>()
     val helpCommandService by inject<HelpCommandService>()
     val mcpService by inject<McpService>()
+    val config by inject<HarnessConfig>()
     val json = Json { explicitNulls = false }
     val logger = log
 
@@ -96,9 +121,14 @@ fun Application.configureApi() {
         exception<ModelProviderException> { call, cause ->
             call.respondError(HttpStatusCode.BadGateway, "model_unavailable", cause.message ?: "Модель временно недоступна.")
         }
+        exception<ChannelWriteException> { call, cause ->
+            logger.debug("Клиент отключился во время записи ответа requestId=${call.callId}", cause)
+        }
         exception<Throwable> { call, cause ->
             logger.error("Необработанная ошибка requestId=${call.callId}", cause)
-            call.respondError(HttpStatusCode.InternalServerError, "internal_error", "Внутренняя ошибка сервера.")
+            if (!call.response.isCommitted) {
+                call.respondError(HttpStatusCode.InternalServerError, "internal_error", "Внутренняя ошибка сервера.")
+            }
         }
     }
 
@@ -139,6 +169,27 @@ fun Application.configureApi() {
                 }
                 get("/{id}") { call.respond(projectService.get(call.requiredId())) }
                 post("/{id}/scan") { call.respond(projectService.scan(call.requiredId())) }
+            }
+
+            post("/code-reviews") {
+                val token = config.codeReviewApiToken
+                if (token.isNullOrBlank()) {
+                    call.respondError(HttpStatusCode.ServiceUnavailable, "code_review_disabled", "Приём CI-ревью не настроен.")
+                    return@post
+                }
+                if (!call.hasBearerToken(token)) {
+                    call.respondError(HttpStatusCode.Unauthorized, "unauthorized", "Недействительный токен CI-ревью.")
+                    return@post
+                }
+                val request = call.receive<CodeReviewCreateRequest>()
+                val task = taskService.createCodeReview(
+                    projectId = request.projectId,
+                    review = request.toDomain(),
+                    modelProfileId = request.modelProfileId,
+                    author = "github-actions",
+                    idempotencyKey = call.request.headers["Idempotency-Key"],
+                )
+                call.respond(HttpStatusCode.Accepted, task)
             }
 
             route("/tasks") {
@@ -207,3 +258,12 @@ private fun ApplicationCall.requiredId(): String =
 
 private fun ApplicationCall.actor(): String =
     request.headers["X-Actor"]?.trim()?.takeIf { it.length in 1..128 } ?: "local"
+
+private fun ApplicationCall.hasBearerToken(expected: String): Boolean {
+    val provided = request.headers[HttpHeaders.Authorization]
+        ?.takeIf { it.startsWith("Bearer ") }
+        ?.removePrefix("Bearer ")
+        ?.takeIf { it.length == expected.length }
+        ?: return false
+    return MessageDigest.isEqual(provided.toByteArray(), expected.toByteArray())
+}
