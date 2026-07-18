@@ -12,7 +12,7 @@ npm install
 npm run dev
 ```
 
-По умолчанию клиент использует относительный URL API. В development Vite проксирует `/api` и `/health` на `http://127.0.0.1:8080`, поэтому Ktor не требует CORS-настройки. В production размести клиент за тем же origin/reverse proxy, что и API.
+По умолчанию клиент использует относительный URL API. В development Vite проксирует `/api` и `/health` на `http://127.0.0.1:8095`, поэтому Ktor не требует CORS-настройки. В production размести клиент за тем же origin/reverse proxy, что и API.
 
 Если инфраструктура уже настроила CORS для отдельного trusted origin, можно указать базовый URL API в `.env.local`:
 

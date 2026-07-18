@@ -256,6 +256,48 @@ class ServerTest {
         eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
     }
 
+    @Test
+    fun `file assistant searches reads and writes only the registered project`() = testApplication {
+        val repository = Files.createTempDirectory("harness-project")
+        Files.writeString(repository.resolve("README.md"), "# Fixture\n\nThe answer is 42.")
+        Files.writeString(repository.resolve("Example.kt"), "package test\nfun answer() = 42")
+        Files.createDirectories(repository.resolve("docs"))
+        val actions = ArrayDeque(
+            listOf(
+                """{"action":"search","query":"answer"}""",
+                """{"action":"read","path":"README.md"}""",
+                "{\"action\":\"write\",\"path\":\"docs/CHANGELOG.md\",\"content\":\"# Changelog\\n\\n- Documented answer.\"}",
+                """{"action":"finish","summary":"Документация обновлена."}""",
+            ),
+        )
+        val fileModelProvider = object : ModelProvider {
+            override suspend fun health(profileId: String) = ModelProviderHealth(profileId, true, "test")
+            override suspend fun complete(profileId: String, request: ModelCompletionRequest) = ModelCompletionResult(
+                profileId, "test-model", actions.removeFirst(),
+            )
+        }
+        application { moduleForTests(testConfig(repository), fileModelProvider) }
+        val projectId = createProject(client, repository)
+
+        val task = client.post("/api/v1/tasks") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"projectId":"$projectId","scenario":"agentWorkflow","mode":"mayModify","modelProfileId":"local","input":"Обнови changelog по ответу"}""")
+        }
+        val taskId = Json.parseToJsonElement(task.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        assertEquals(HttpStatusCode.OK, client.post("/api/v1/tasks/$taskId/approvals") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"kind":"fileModification","decision":"approved"}""")
+        }.status)
+
+        eventually { client.get("/api/v1/tasks/$taskId").bodyAsText().contains("completed") }
+        assertEquals("# Changelog\n\n- Documented answer.", Files.readString(repository.resolve("docs/CHANGELOG.md")))
+        val artifacts = client.get("/api/v1/tasks/$taskId/artifacts").bodyAsText()
+        assertContains(artifacts, "fileInventory")
+        assertContains(artifacts, "fileOperations")
+        assertContains(artifacts, "fileChanges")
+        assertContains(artifacts, "docs/CHANGELOG.md")
+    }
+
     private suspend fun createProject(client: io.ktor.client.HttpClient, repository: java.nio.file.Path): String {
         val response = client.post("/api/v1/projects") {
             contentType(ContentType.Application.Json)

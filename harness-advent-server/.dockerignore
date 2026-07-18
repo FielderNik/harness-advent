@@ -1,0 +1,8 @@
+.gradle
+build
+harness.local.properties
+*.db
+*.sqlite
+*.sqlite3
+rag-index
+logs

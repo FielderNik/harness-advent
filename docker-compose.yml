@@ -1,0 +1,41 @@
+services:
+  harness:
+    build:
+      context: ./harness-advent-server
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      # SQLite JDBC извлекает сюда нативную библиотеку, которую JVM должна выполнить.
+      - /tmp:mode=1777,exec
+    ports:
+      - "127.0.0.1:8095:8095"
+    environment:
+      # Эти значения имеют приоритет над properties-файлом внутри контейнера.
+      # Поэтому зарегистрировать можно только единственный bind mount ниже.
+      HARNESS_ALLOWED_PROJECTS: /workspace
+      HARNESS_DATABASE_URL: jdbc:sqlite:/var/lib/harness/harness-advent.db
+      HARNESS_CONFIG_FILE: /config/harness.local.properties
+    volumes:
+      - type: bind
+        source: ${HARNESS_PROJECT_PATH:?Укажи абсолютный путь к одному проекту в HARNESS_PROJECT_PATH}
+        target: /workspace
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./harness-advent-server/harness.local.properties
+        target: /config/harness.local.properties
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: harness-state
+        target: /var/lib/harness
+
+volumes:
+  harness-state:

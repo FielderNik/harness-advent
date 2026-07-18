@@ -29,6 +29,16 @@ interface SourceRepository {
     suspend fun search(projectId: String, query: String, limit: Int = 10): List<SourceDocument>
 }
 
+interface ProjectFiles {
+    suspend fun list(project: Project, limit: Int = 300): List<String>
+    suspend fun search(project: Project, query: String, limit: Int = 50): List<FileSearchMatch>
+    suspend fun read(project: Project, path: String): String
+    suspend fun write(project: Project, path: String, content: String): FileWriteResult
+}
+
+data class FileSearchMatch(val path: String, val line: Int, val content: String)
+data class FileWriteResult(val path: String, val previousContent: String?, val content: String)
+
 interface CodeAgentRunner {
     suspend fun run(task: Task): AgentRunResult
 }

@@ -63,7 +63,11 @@ data class HarnessConfig(
         }
 
         fun fromProperties(properties: Properties): HarnessConfig {
-            val allowedProjects = properties.getProperty("HARNESS_ALLOWED_PROJECTS")
+            // Контейнерный запуск задаёт эту границу окружением. Приоритет над
+            // локальным файлом конфигурации не позволяет расширить область
+            // доступных проектов значением из смонтированного config-файла.
+            val allowedProjects = System.getenv("HARNESS_ALLOWED_PROJECTS")?.takeIf(String::isNotBlank)
+                ?: properties.getProperty("HARNESS_ALLOWED_PROJECTS")
                 ?: properties.getProperty("server.allowedProjectPaths")
             val paths = allowedProjects
                 .orEmpty()
@@ -85,7 +89,9 @@ data class HarnessConfig(
                 .distinct()
                 .map { id -> mcpServerConnection(properties, id) }
             return HarnessConfig(
-                databaseUrl = properties.getProperty("server.databaseUrl") ?: "jdbc:sqlite:./harness-advent.db",
+                databaseUrl = System.getenv("HARNESS_DATABASE_URL")?.takeIf(String::isNotBlank)
+                    ?: properties.getProperty("server.databaseUrl")
+                    ?: "jdbc:sqlite:./harness-advent.db",
                 allowedProjectPaths = paths,
                 modelProfiles = modelIds.map { id -> connections.getValue(id).toPublicProfile(providerName(id)) },
                 modelConnections = connections,

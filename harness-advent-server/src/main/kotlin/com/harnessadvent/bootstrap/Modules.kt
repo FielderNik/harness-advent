@@ -15,11 +15,12 @@ fun harnessModule(config: HarnessConfig, modelProviderOverride: ModelProvider? =
     single<SourceRepository> { ExposedSourceRepository(get()) }
     single { AllowedProjectPolicy(config.allowedProjectPaths) }
     single { SafeProjectScanner() }
+    single<ProjectFiles> { SafeProjectFiles(get()) }
     single<ModelProvider> { modelProviderOverride ?: OpenAiCompatibleModelProvider(config.modelConnections) }
     single<McpRegistry> { ConfiguredMcpRegistry(config.mcpServers) }
     single<GitProvider> { DisabledGitProvider() }
     single { TaskEventStream() }
-    single { TaskExecutor(get(), get(), get(), get()) }
+    single { TaskExecutor(get(), get(), get(), get(), get(), get()) }
     single { ProjectService(get(), get(), get(), get()) }
     single { TaskService(get(), get(), get(), get(), get(), config.codeReviewAutoApprovedContextProfiles) }
     single { ModelProfileService(config.modelProfiles) }
