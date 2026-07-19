@@ -28,8 +28,29 @@ mcp.github.env.GITHUB_TOOLSETS=repos,issues,pull_requests
 
 После запуска сервера реестр можно проверить через `GET /api/v1/mcp/servers`; список безопасно опубликованных инструментов — через `GET /api/v1/mcp/servers/github/tools`.
 
+## YouTrack для ассистента поддержки
+
+Сценарий `supportAnswer` использует отдельный stdio MCP только для одного инструмента `youtrack_get_issue`. Он получает тикет, очищает его содержимое перед сохранением в артефакте и объединяет его с локальным RAG-контекстом зарегистрированного проекта. Поля тикета не принимаются из HTTP-запроса и не могут расширить запрошенный набор данных.
+
+Для локального сервера из `/Users/alexey_nik/advent_ai/mcp_youtrack_server` добавь в игнорируемый `harness.local.properties`:
+
+```properties
+mcp.servers=youtrack
+support.youtrack.serverId=youtrack
+mcp.youtrack.command=node
+mcp.youtrack.arguments=/Users/alexey_nik/advent_ai/mcp_youtrack_server/scripts/run-stdio.mjs
+mcp.youtrack.readOnly=true
+mcp.youtrack.allowedTools=youtrack_get_issue
+mcp.youtrack.timeoutSeconds=30
+mcp.youtrack.env.YOUTRACK_URL=
+mcp.youtrack.env.YOUTRACK_TOKEN=
+```
+
+Сначала выполни `npm run build` в каталоге MCP. Не добавляй write-инструменты (`save`, `start`, `stop`) в allowlist: они не нужны для ответа пользователю. `YOUTRACK_TOKEN` должен иметь только доступ на чтение нужных проектов и не должен появляться в Git, артефактах, логах или ответах API.
+
 ## Границы
 
 - MCP-инструменты не вызываются автоматически из `/help`; `/help` использует только локальный документационный RAG.
+- `supportAnswer` автоматически вызывает только allowlisted `youtrack_get_issue`; все остальные MCP-инструменты, включая запись файлов и периодические задания, исключены.
 - Для вызова инструмента доступен `POST /api/v1/mcp/servers/{id}/tools/{toolName}`. Сервер проверяет allowlist до запуска MCP.
 - Добавление write-инструментов, OAuth или публикации на GitHub не входит в этот этап и потребует отдельной политики и approval.

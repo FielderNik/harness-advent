@@ -1,5 +1,5 @@
 export type ProjectScanStatus = "NOT_SCANNED" | "READY" | "FAILED";
-export type TaskScenario = "ragQuestion" | "codeReview" | "agentWorkflow";
+export type TaskScenario = "ragQuestion" | "supportAnswer" | "codeReview" | "agentWorkflow";
 export type TaskMode = "readOnly" | "mayModify";
 export type TaskStatus = "queued" | "running" | "waitingApproval" | "completed" | "failed" | "cancelled";
 export type EventLevel = "INFO" | "WARNING" | "ERROR";
@@ -68,5 +68,12 @@ export interface TaskCreateInput {
 export interface HelpCommandInput {
   projectId: string;
   command: string;
+  modelProfileId: string;
+}
+
+export interface SupportAnswerInput {
+  projectId: string;
+  ticketId: string;
+  question: string;
   modelProfileId: string;
 }

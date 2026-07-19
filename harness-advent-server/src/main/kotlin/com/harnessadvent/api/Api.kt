@@ -72,6 +72,14 @@ data class ApprovalCreateRequest(val kind: ApprovalKind, val decision: ApprovalD
 data class HelpCommandRequest(val projectId: String, val command: String, val modelProfileId: String)
 
 @Serializable
+data class SupportAnswerCreateRequest(
+    val projectId: String,
+    val ticketId: String,
+    val question: String,
+    val modelProfileId: String,
+)
+
+@Serializable
 data class McpToolCallRequest(val arguments: JsonObject = JsonObject(emptyMap()))
 
 fun Application.configureMonitoring() {
@@ -148,6 +156,19 @@ fun Application.configureApi() {
                     )
                     call.respond(HttpStatusCode.Accepted, task)
                 }
+            }
+
+            post("/support/answers") {
+                val request = call.receive<SupportAnswerCreateRequest>()
+                val task = taskService.createSupportAnswer(
+                    projectId = request.projectId,
+                    ticketId = request.ticketId,
+                    question = request.question,
+                    modelProfileId = request.modelProfileId,
+                    author = call.actor(),
+                    idempotencyKey = call.request.headers["Idempotency-Key"],
+                )
+                call.respond(HttpStatusCode.Accepted, task)
             }
 
             route("/mcp/servers") {

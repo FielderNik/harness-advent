@@ -11,6 +11,7 @@ import type {
   Task,
   TaskCreateInput,
   HelpCommandInput,
+  SupportAnswerInput,
 } from "./types.js";
 
 export class ApiError extends Error {
@@ -56,6 +57,14 @@ export class HarnessApi {
 
   executeHelp(input: HelpCommandInput, idempotencyKey: string) {
     return this.request<Task>("/api/v1/assistant/commands", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(input),
+    });
+  }
+
+  createSupportAnswer(input: SupportAnswerInput, idempotencyKey: string) {
+    return this.request<Task>("/api/v1/support/answers", {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(input),

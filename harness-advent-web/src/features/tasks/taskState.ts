@@ -11,6 +11,7 @@ const statusLabels: Record<TaskStatus, string> = {
 
 const scenarioLabels: Record<TaskScenario, string> = {
   ragQuestion: "Поиск по проекту",
+  supportAnswer: "Ассистент поддержки",
   codeReview: "Код-ревью",
   agentWorkflow: "Агентский сценарий",
 };

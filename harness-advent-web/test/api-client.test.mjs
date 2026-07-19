@@ -40,3 +40,28 @@ test("project registration uses the same server API boundary", async () => {
     assert.deepEqual(JSON.parse(request.init.body), { name: "Проект", path: "/safe/project" });
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("support answer uses its dedicated endpoint and carries a ticket id", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, init };
+    return new Response(JSON.stringify({ id: "task-42", scenario: "supportAnswer", status: "queued" }), { status: 202 });
+  };
+  try {
+    await new HarnessApi("http://server.test").createSupportAnswer({
+      projectId: "trainingdiary",
+      ticketId: "TRAIN-42",
+      question: "Можно ли восстановить тренировку?",
+      modelProfileId: "local",
+    }, "support-key");
+    assert.equal(request.url, "http://server.test/api/v1/support/answers");
+    assert.equal(new Headers(request.init.headers).get("Idempotency-Key"), "support-key");
+    assert.deepEqual(JSON.parse(request.init.body), {
+      projectId: "trainingdiary",
+      ticketId: "TRAIN-42",
+      question: "Можно ли восстановить тренировку?",
+      modelProfileId: "local",
+    });
+  } finally { globalThis.fetch = originalFetch; }
+});

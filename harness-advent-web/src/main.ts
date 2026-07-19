@@ -5,7 +5,7 @@ import type { Artifact, McpServer, ModelProfile, Project, Task, TaskEvent, TaskM
 import { canCancelTask, isTerminalTask, modeLabel, scenarioLabel, statusLabel } from "./features/tasks/taskState.js";
 
 type Page = "tasks" | "projects";
-type Tab = "plan" | "timeline" | "sources" | "changes" | "checks" | "report";
+type Tab = "plan" | "timeline" | "ticket" | "sources" | "changes" | "checks" | "report";
 type Dialog = { type: "cancel" } | { type: "approval" } | null;
 
 const api = new HarnessApi();
@@ -235,7 +235,7 @@ function tasksScreen(task: Task | null) {
       <div><span>Последнее обновление</span><strong>${formatDate(task.updatedAt)}</strong></div>
     </section>
     <nav class="tabs" aria-label="Материалы задачи">
-      ${tabButton("plan", "План")}${tabButton("timeline", "Журнал")}${tabButton("sources", "Источники")}${tabButton("changes", "Изменения")}${tabButton("checks", "Проверки")}${tabButton("report", "Отчёт")}
+      ${tabButton("plan", "План")}${tabButton("timeline", "Журнал")}${task.scenario === "supportAnswer" ? tabButton("ticket", "Тикет") : ""}${tabButton("sources", "Источники")}${tabButton("changes", "Изменения")}${tabButton("checks", "Проверки")}${tabButton("report", "Отчёт")}
     </nav>
     <section class="tab-content">${tabContent(task)}</section>
   `;
@@ -250,6 +250,13 @@ function newTaskScreen() {
       <div class="form-grid"><label>Проект<select name="projectId" required ${projects.length === 0 ? "disabled" : ""}><option value="">Выберите проект</option>${projects.map((project) => `<option value="${project.id}">${escapeHtml(project.name)} · ${scanStatusLabel(project.scanStatus)}</option>`).join("")}</select></label><label>Профиль модели<select name="modelProfileId" required ${configuredProfiles.length === 0 ? "disabled" : ""}>${configuredProfiles.map((profile) => `<option value="${profile.id}" ${profile.id === selectedProfileId ? "selected" : ""}>${escapeHtml(profile.provider)}</option>`).join("")}</select></label></div>
       <label>Команда<input name="command" required value="/help " placeholder="/help Как устроен сервер?" /></label>
       <div class="form-actions"><button class="primary-button" type="submit" ${projects.length === 0 || configuredProfiles.length === 0 ? "disabled" : ""}>Спросить ассистента</button></div>
+    </form>
+    <form class="task-form" data-form="support-answer">
+      <div><h2>Ассистент поддержки</h2><p class="form-help">Получает тикет только через read-only YouTrack MCP, затем ищет ответ в RAG-источниках выбранного проекта. Убедитесь, что YouTrack MCP настроен в панели справа.</p></div>
+      <div class="form-grid"><label>Проект<select name="projectId" required ${projects.length === 0 ? "disabled" : ""}><option value="">Выберите проект</option>${projects.map((project) => `<option value="${project.id}">${escapeHtml(project.name)} · ${scanStatusLabel(project.scanStatus)}</option>`).join("")}</select></label><label>Тикет YouTrack<input name="ticketId" required maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{0,127}" placeholder="TRAIN-42" /></label></div>
+      <label>Профиль модели<select name="modelProfileId" required ${configuredProfiles.length === 0 ? "disabled" : ""}>${configuredProfiles.map((profile) => `<option value="${profile.id}" ${profile.id === selectedProfileId ? "selected" : ""}>${escapeHtml(profile.provider)}</option>`).join("")}</select></label>
+      <label>Вопрос пользователя<textarea name="question" rows="4" required minlength="3" maxlength="4000" placeholder="Я случайно удалил тренировку. Можно ли её восстановить?"></textarea></label>
+      <div class="form-actions"><button class="primary-button" type="submit" ${projects.length === 0 || configuredProfiles.length === 0 ? "disabled" : ""}>Получить ответ поддержки</button></div>
     </form>
     <form class="task-form" data-form="create-task">
       <label>Проект<select name="projectId" required ${projects.length === 0 ? "disabled" : ""}>
@@ -275,9 +282,10 @@ function tabButton(next: Tab, label: string) {
 function tabContent(task: Task) {
   const tabArtifacts = (type: string) => artifacts.filter((item) => item.type === type);
   if (tab === "timeline") return timelineContent();
+  if (tab === "ticket") return artifactContent(tabArtifacts("supportTicketContext"), "Контекст тикета ещё не получен.", "После обращения к YouTrack MCP здесь появится очищенный контекст тикета.");
   if (tab === "plan") return artifactContent(tabArtifacts("modelReport"), "План пока не сохранён отдельным артефактом.", "План и стадии сервера появятся здесь по мере развития API.");
-  if (tab === "sources") return artifactContent(tabArtifacts("ragSources"), "Источники ещё не получены.", "Для поиска сначала отсканируйте проект и создайте задачу поиска.");
-  if (tab === "report") return artifactContent([...tabArtifacts("modelReport"), ...tabArtifacts("codeReviewReport")], "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
+  if (tab === "sources") return artifactContent(task.scenario === "supportAnswer" ? tabArtifacts("supportSources") : tabArtifacts("ragSources"), "Источники ещё не получены.", "Для поиска сначала отсканируйте проект и создайте задачу поиска.");
+  if (tab === "report") return artifactContent([...tabArtifacts("modelReport"), ...tabArtifacts("codeReviewReport"), ...tabArtifacts("supportAnswer")], "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
   if (tab === "changes") return unavailableArtifact("Изменения рабочей копии", "Текущий безопасный серверный адаптер не изменяет файлы. Когда появятся diff-артефакты, они будут отображены здесь.");
   return unavailableArtifact("Проверки", "Текущий безопасный серверный адаптер не запускает внешние команды. Проверки и их логи будут доступны отдельными артефактами.");
 }
@@ -396,6 +404,7 @@ appRoot.addEventListener("submit", (event) => {
   if (form.dataset.form === "create-task") void createTask(new FormData(form));
   if (form.dataset.form === "create-project") void createProject(new FormData(form));
   if (form.dataset.form === "help-command") void executeHelpCommand(new FormData(form));
+  if (form.dataset.form === "support-answer") void createSupportAnswer(new FormData(form));
 });
 
 async function createTask(form: FormData) {
@@ -435,6 +444,30 @@ async function executeHelpCommand(form: FormData) {
     }, crypto.randomUUID());
     tasks = [task, ...tasks.filter((item) => item.id !== task.id)];
     setMessage("Вопрос передан ассистенту. Источники и ответ появятся в задаче.");
+    await selectTask(task.id);
+  } catch (cause) {
+    setError(cause);
+  } finally {
+    loading = false;
+    render();
+  }
+}
+
+async function createSupportAnswer(form: FormData) {
+  const ticketId = String(form.get("ticketId") ?? "").trim();
+  const question = String(form.get("question") ?? "").trim();
+  if (!ticketId || !question) return;
+  loading = true;
+  render();
+  try {
+    const task = await api.createSupportAnswer({
+      projectId: String(form.get("projectId")),
+      ticketId,
+      question,
+      modelProfileId: String(form.get("modelProfileId")),
+    }, crypto.randomUUID());
+    tasks = [task, ...tasks.filter((item) => item.id !== task.id)];
+    setMessage("Запрос поддержки создан. Контекст тикета, источники и ответ появятся в задаче.");
     await selectTask(task.id);
   } catch (cause) {
     setError(cause);

@@ -2,6 +2,7 @@ package com.harnessadvent.bootstrap
 
 import com.harnessadvent.domain.ContextPolicy
 import com.harnessadvent.domain.ModelProfile
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Properties
@@ -39,6 +40,7 @@ data class HarnessConfig(
     val modelProfiles: List<ModelProfile>,
     val modelConnections: Map<String, ModelConnection> = emptyMap(),
     val mcpServers: List<McpServerConnection> = emptyList(),
+    val supportYouTrackServerId: String = "youtrack",
     val codeReviewApiToken: String? = null,
     val codeReviewAutoApprovedContextProfiles: Set<String> = emptySet(),
 ) {
@@ -57,7 +59,7 @@ data class HarnessConfig(
         fun fromFile(configPath: Path): HarnessConfig {
             val properties = Properties()
             if (Files.isRegularFile(configPath)) {
-                Files.newInputStream(configPath).use(properties::load)
+                Files.newBufferedReader(configPath, StandardCharsets.UTF_8).use(properties::load)
             }
             return fromProperties(properties)
         }
@@ -96,6 +98,8 @@ data class HarnessConfig(
                 modelProfiles = modelIds.map { id -> connections.getValue(id).toPublicProfile(providerName(id)) },
                 modelConnections = connections,
                 mcpServers = mcpServers,
+                supportYouTrackServerId = properties.getProperty("support.youtrack.serverId")?.trim()
+                    ?.takeIf(String::isNotEmpty) ?: "youtrack",
                 codeReviewApiToken = properties.getProperty("codeReview.apiToken")?.trim()?.takeIf(String::isNotEmpty),
                 codeReviewAutoApprovedContextProfiles = autoApprovedProfiles,
             )

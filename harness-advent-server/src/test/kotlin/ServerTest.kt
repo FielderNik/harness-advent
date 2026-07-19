@@ -9,6 +9,10 @@ import com.harnessadvent.domain.ModelCompletionResult
 import com.harnessadvent.domain.ModelProfile
 import com.harnessadvent.domain.ModelProvider
 import com.harnessadvent.domain.ModelProviderHealth
+import com.harnessadvent.domain.McpRegistry
+import com.harnessadvent.domain.McpServer
+import com.harnessadvent.domain.McpTool
+import com.harnessadvent.domain.McpToolResult
 import io.ktor.client.request.*
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.*
@@ -17,6 +21,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonObject
 import java.nio.file.Files
 import kotlin.test.*
 
@@ -81,6 +86,60 @@ class ServerTest {
         assertEquals("ragQuestion", body["scenario"]?.jsonPrimitive?.content)
         assertEquals("readOnly", body["mode"]?.jsonPrimitive?.content)
         assertEquals("Как устроен сервер?", body["input"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `support answer combines a YouTrack ticket with Trainingdiary RAG sources`() = testApplication {
+        val repository = Files.createTempDirectory("trainingdiary")
+        Files.writeString(
+            repository.resolve("README.md"),
+            "# Trainingdiary\n\n## Авторизация\nПри ошибке входа пользователь должен повторить вход после очистки локальной сессии.",
+        )
+        var prompt = ""
+        val supportModel = object : ModelProvider {
+            override suspend fun health(profileId: String) = ModelProviderHealth(profileId, true, "test")
+
+            override suspend fun complete(profileId: String, request: ModelCompletionRequest): ModelCompletionResult {
+                prompt = request.prompt
+                return ModelCompletionResult(profileId, "test-model", "Повторите вход после очистки сессии. [README.md:3]")
+            }
+        }
+        val youTrackMcp = object : McpRegistry {
+            override suspend fun servers() = listOf(McpServer("youtrack", "YouTrack", true, true, emptySet()))
+            override suspend fun tools(serverId: String) = listOf(McpTool("youtrack_get_issue"))
+            override suspend fun call(serverId: String, toolName: String, arguments: JsonObject): McpToolResult {
+                assertEquals("youtrack", serverId)
+                assertEquals("youtrack_get_issue", toolName)
+                assertEquals("TRAIN-42", arguments["issueId"]?.jsonPrimitive?.content)
+                return McpToolResult(
+                    content = """[{"type":"text","text":"{\"readableId\":\"TRAIN-42\",\"summary\":\"Не работает авторизация\",\"description\":\"После смены пароля вход завершается ошибкой. Контакт contact@example.test\",\"resolved\":null,\"project\":{\"shortName\":\"TRAIN\"},\"customFields\":[{\"name\":\"State\",\"value\":{\"name\":\"Open\"}}]}"}]""",
+                )
+            }
+        }
+        application { moduleForTests(testConfig(repository), supportModel, youTrackMcp) }
+        val projectId = createProject(client, repository)
+        client.post("/api/v1/projects/$projectId/scan")
+
+        val response = client.post("/api/v1/support/answers") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"projectId":"$projectId","ticketId":"TRAIN-42","question":"Почему не работает авторизация?","modelProfileId":"local"}""")
+        }
+
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val taskId = Json.parseToJsonElement(response.bodyAsText()).jsonObject["id"]!!.jsonPrimitive.content
+        eventually {
+            val task = client.get("/api/v1/tasks/$taskId").bodyAsText()
+            task.contains("completed") || task.contains("failed")
+        }
+        assertContains(client.get("/api/v1/tasks/$taskId").bodyAsText(), "completed")
+        val artifacts = client.get("/api/v1/tasks/$taskId/artifacts").bodyAsText()
+        assertContains(artifacts, "supportTicketContext")
+        assertContains(artifacts, "supportSources")
+        assertContains(artifacts, "supportAnswer")
+        assertFalse(artifacts.contains("contact@example.test"))
+        assertContains(prompt, "[redacted email]")
+        assertContains(prompt, "README.md:1-4")
+        assertContains(prompt, "[тикет: TRAIN-42]")
     }
 
     @Test

@@ -30,6 +30,7 @@ CodeAgent и Git-публикация по умолчанию отключены
 | `mcp.<id>.command`, `arguments` | Команда и аргументы MCP без shell-интерпретации |
 | `mcp.<id>.allowedTools` | Точный allowlist MCP-инструментов |
 | `mcp.<id>.readOnly` | Обязательный read-only режим для GitHub MCP |
+| `support.youtrack.serverId` | ID read-only MCP-сервера, из которого сценарий поддержки получает тикет; по умолчанию `youtrack` |
 | `codeReview.apiToken` | Секрет Bearer-аутентификации endpoint для GitHub Action |
 | `codeReview.autoApproveContextProfiles` | Облачные профили через запятую, которым code review может передавать контекст без ручного approval |
 
@@ -46,10 +47,11 @@ CodeAgent и Git-публикация по умолчанию отключены
 - `GET /model-profiles`, `GET /model-profiles/{id}/models`, `GET /model-profiles/{id}/health`;
 - `POST /model-profiles/{id}/completions` для OpenAI-compatible `chat/completions`.
 - `POST /assistant/commands` для `/help <вопрос>`;
+- `POST /support/answers` для ответа поддержки по тикету YouTrack и RAG-контексту проекта;
 - `GET /mcp/servers`, `GET /mcp/servers/{id}/tools`, `POST /mcp/servers/{id}/tools/{toolName}`.
 - `POST /code-reviews` для CI-ревью; требует `Authorization: Bearer <codeReview.apiToken>`.
 
-Создание задания принимает `projectId`, `scenario` (`ragQuestion`, `codeReview`, `agentWorkflow`), `mode` (`readOnly`, `mayModify`), `modelProfileId` и `input`. Состояния возвращаются как `queued`, `running`, `waitingApproval`, `completed`, `failed` или `cancelled`. Повторная отправка с одинаковым заголовком `Idempotency-Key` возвращает существующее задание. `X-Actor` — только локальная аудиторская метка, а не механизм аутентификации.
+Создание задания принимает `projectId`, `scenario` (`ragQuestion`, `codeReview`, `agentWorkflow`), `mode` (`readOnly`, `mayModify`), `modelProfileId` и `input`. `supportAnswer` создаётся только через `/support/answers`, потому что ему обязательно нужен валидированный идентификатор тикета. Состояния возвращаются как `queued`, `running`, `waitingApproval`, `completed`, `failed` или `cancelled`. Повторная отправка с одинаковым заголовком `Idempotency-Key` возвращает существующее задание. `X-Actor` — только локальная аудиторская метка, а не механизм аутентификации.
 
 Для completion отправь `model` (необязательно, берётся первая разрешённая модель), `prompt` и `externalContextApproved`. Для облачных профилей последнее поле обязательно должно быть `true`; сервер отказывается отправлять строку, похожую на API-ключ или приватный ключ, и никогда не возвращает токен в API или логи.
 
@@ -58,6 +60,22 @@ CodeAgent и Git-публикация по умолчанию отключены
 `POST /assistant/commands` принимает `projectId`, `command` и `modelProfileId`; в текущей версии поддерживается только `/help`. Команда создаёт обычную `ragQuestion` в режиме `readOnly`. Ответ модели должен ссылаться на переданные фрагменты документации, а точные источники остаются в `ragSources`-артефакте.
 
 MCP остаётся отдельной read-only интеграцией и не вызывается автоматически из `/help`. Для GitHub используй официальный образ, `GITHUB_READ_ONLY=1`, один разрешённый репозиторий и fine-grained PAT с доступом только к нему. Полный пример находится в `harness.local.properties.example`, правила — в [docs/mcp.md](../docs/mcp.md).
+
+### Ассистент поддержки Trainingdiary
+
+`POST /support/answers` создаёт фоновую read-only задачу `supportAnswer`. Исполнитель вызывает только `youtrack_get_issue` указанного в `support.youtrack.serverId` MCP-сервера, берёт из тикета краткое описание, статус и проект, маскирует e-mail, телефоны и значения, похожие на секреты. Затем он ищет RAG-фрагменты только в зарегистрированной рабочей копии и формирует ответ. В YouTrack ничего не записывается.
+
+Для текущего задания зарегистрируй и просканируй `/Users/alexey_nik/AndroidStudioProjects/Trainingdiary`; каталог должен быть указан в `HARNESS_ALLOWED_PROJECTS`. Собери ваш MCP один раз (`cd /Users/alexey_nik/advent_ai/mcp_youtrack_server && npm run build`), добавь `youtrack` в `mcp.servers` и настрой его по примеру в `harness.local.properties.example`. URL и токен YouTrack остаются только в игнорируемом `harness.local.properties` или в окружении процесса.
+
+После регистрации проекта вызови endpoint, подставив его ID:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/v1/support/answers \
+  -H 'Content-Type: application/json' \
+  -d '{"projectId":"<trainingdiary-project-id>","ticketId":"TRAIN-42","question":"Почему не работает авторизация?","modelProfileId":"local"}'
+```
+
+Результат появится в `GET /api/v1/tasks/{taskId}/artifacts`: `supportTicketContext` содержит очищенный контекст тикета, `supportSources` — использованные RAG-источники с путями и строками, `supportAnswer` — готовый ответ. Для облачных профилей задача сначала ожидает обычного `contextTransfer` approval, чтобы не передавать контекст тикета без явного согласия.
 
 ### CI code review
 

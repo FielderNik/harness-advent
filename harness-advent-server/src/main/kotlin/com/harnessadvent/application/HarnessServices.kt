@@ -49,16 +49,19 @@ class TaskService(
         modelProfileId: String,
         author: String,
         idempotencyKey: String?,
-    ): Task = createInternal(
-        projectId = projectId,
-        scenario = scenario,
-        mode = mode,
-        input = input,
-        modelProfileId = modelProfileId,
-        author = author,
-        idempotencyKey = idempotencyKey,
-        startImmediately = true,
-    ).first
+    ): Task {
+        require(scenario != TaskScenario.SUPPORT_ANSWER) { "Для ответа поддержки используй POST /support/answers." }
+        return createInternal(
+            projectId = projectId,
+            scenario = scenario,
+            mode = mode,
+            input = input,
+            modelProfileId = modelProfileId,
+            author = author,
+            idempotencyKey = idempotencyKey,
+            startImmediately = true,
+        ).first
+    }
 
     suspend fun createCodeReview(
         projectId: String,
@@ -92,6 +95,36 @@ class TaskService(
         )
         repository.addArtifact(Artifact(UUID.randomUUID().toString(), task.id, "changedFiles", content = Json.encodeToString(safeReview.changedFiles), createdAt = time))
         repository.addArtifact(Artifact(UUID.randomUUID().toString(), task.id, "prDiff", content = safeReview.diff, createdAt = time))
+        if (task.status == TaskStatus.QUEUED) executor.start(task.id)
+        return task
+    }
+
+    suspend fun createSupportAnswer(
+        projectId: String,
+        ticketId: String,
+        question: String,
+        modelProfileId: String,
+        author: String,
+        idempotencyKey: String?,
+    ): Task {
+        val request = SupportAnswerRequest(ticketId = ticketId.trim(), question = question.trim())
+        require(SUPPORT_TICKET_ID_PATTERN.matches(request.ticketId)) { "Идентификатор тикета некорректен." }
+        require(request.question.length in 3..4_000) { "Вопрос поддержки должен содержать от 3 до 4000 символов." }
+        if (!idempotencyKey.isNullOrBlank()) repository.findByIdempotencyKey(idempotencyKey)?.let { return it }
+        val (task, isNew) = createInternal(
+            projectId = projectId,
+            scenario = TaskScenario.SUPPORT_ANSWER,
+            mode = TaskMode.READ_ONLY,
+            input = "Вопрос поддержки по тикету ${request.ticketId}: ${request.question}",
+            modelProfileId = modelProfileId,
+            author = author,
+            idempotencyKey = idempotencyKey,
+            startImmediately = false,
+        )
+        if (!isNew) return task
+        repository.addArtifact(
+            Artifact(UUID.randomUUID().toString(), task.id, "supportRequest", content = Json.encodeToString(request), createdAt = System.currentTimeMillis()),
+        )
         if (task.status == TaskStatus.QUEUED) executor.start(task.id)
         return task
     }
@@ -209,6 +242,7 @@ class TaskService(
         const val MAX_REVIEW_DIFF_SIZE = 200_000
         const val MAX_CHANGED_FILES = 300
         val REPOSITORY_PATTERN = Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+        val SUPPORT_TICKET_ID_PATTERN = Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
     }
 }
 

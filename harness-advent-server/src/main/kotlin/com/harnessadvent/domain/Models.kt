@@ -24,6 +24,7 @@ enum class TaskMode {
 @Serializable
 enum class TaskScenario {
     @SerialName("ragQuestion") RAG_QUESTION,
+    @SerialName("supportAnswer") SUPPORT_ANSWER,
     @SerialName("codeReview") CODE_REVIEW,
     @SerialName("agentWorkflow") AGENT_WORKFLOW,
 }
@@ -145,6 +146,17 @@ data class ChangedFile(
     val path: String,
     val status: String,
     val previousPath: String? = null,
+)
+
+/**
+ * Запрос поддержки использует тикет только как read-only контекст. Полное
+ * содержимое тикета не хранится в самом задании: оно сокращается и очищается
+ * перед сохранением в артефакте исполнителя.
+ */
+@Serializable
+data class SupportAnswerRequest(
+    val ticketId: String,
+    val question: String,
 )
 
 /**

@@ -1,6 +1,7 @@
 # Скопируй в harness.local.properties. Этот локальный файл игнорируется Git.
 server.databaseUrl=jdbc:sqlite:./harness-advent.db
-# Абсолютные пути к рабочим копиям через запятую.
+# Абсолютные пути к рабочим копиям через запятую. Для ассистента поддержки
+# Trainingdiary укажи: /Users/alexey_nik/AndroidStudioProjects/Trainingdiary
 HARNESS_ALLOWED_PROJECTS=
 
 # GitHub Action передаёт этот секрет в Authorization: Bearer. Оставь пустым,
@@ -43,3 +44,18 @@ mcp.github.timeoutSeconds=30
 mcp.github.env.GITHUB_PERSONAL_ACCESS_TOKEN=
 mcp.github.env.GITHUB_READ_ONLY=1
 mcp.github.env.GITHUB_TOOLSETS=repos,issues,pull_requests
+
+# Ассистент поддержки: read-only контекст тикета через локальный YouTrack MCP.
+# Добавь youtrack в mcp.servers (например, mcp.servers=github,youtrack), если
+# нужен этот сценарий. Перед первым запуском собери MCP: cd
+# /Users/alexey_nik/advent_ai/mcp_youtrack_server && npm run build.
+support.youtrack.serverId=youtrack
+mcp.youtrack.name=YouTrack (только чтение)
+mcp.youtrack.command=node
+mcp.youtrack.arguments=/Users/alexey_nik/advent_ai/mcp_youtrack_server/scripts/run-stdio.mjs
+mcp.youtrack.readOnly=true
+mcp.youtrack.allowedTools=youtrack_get_issue
+mcp.youtrack.timeoutSeconds=30
+# Укажи реальные значения только в игнорируемом harness.local.properties.
+mcp.youtrack.env.YOUTRACK_URL=
+mcp.youtrack.env.YOUTRACK_TOKEN=

@@ -58,6 +58,26 @@ class ModelProviderTest {
     }
 
     @Test
+    fun `reads UTF-8 MCP name from local properties`() {
+        val configFile = Files.createTempFile("harness", ".properties")
+        Files.writeString(
+            configFile,
+            """
+            mcp.servers=youtrack
+            mcp.youtrack.name=YouTrack (только чтение)
+            mcp.youtrack.command=node
+            mcp.youtrack.arguments=/tmp/youtrack.mjs
+            mcp.youtrack.readOnly=true
+            mcp.youtrack.allowedTools=youtrack_get_issue
+            """.trimIndent(),
+        )
+
+        val config = HarnessConfig.fromFile(configFile)
+
+        assertEquals("YouTrack (только чтение)", config.mcpServers.single().name)
+    }
+
+    @Test
     fun `GitHub MCP injects the configured repository and rejects another one`() {
         val connection = McpServerConnection(
             id = "github", name = "GitHub", command = "docker", arguments = listOf("run"), environment = emptyMap(),
