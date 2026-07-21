@@ -59,3 +59,17 @@ mcp.youtrack.timeoutSeconds=30
 # Укажи реальные значения только в игнорируемом harness.local.properties.
 mcp.youtrack.env.YOUTRACK_URL=
 mcp.youtrack.env.YOUTRACK_TOKEN=
+
+# Генерация unit-тестов для репозиториев. Включай только для одного разрешённого
+# GitHub-репозитория и передавай токен предпочтительно через окружение
+# HARNESS_GITHUB_TEST_GENERATION_TOKEN, а не через этот файл. GitHub MCP
+# остаётся read-only: PR создаётся GitHub REST-адаптером после подтверждения.
+testGeneration.enabled=false
+testGeneration.allowedRepository=owner/repository
+testGeneration.baseBranch=main
+testGeneration.checkCommand=./gradlew,:composeApp:testDebugUnitTest,--no-daemon,--no-watch-fs,--max-workers=2
+# Лимит ожидания Gradle: от 30 до 900 секунд. Android SDK API 36 и build-tools
+# 35.0.0 и 36.0.0 уже входят в Docker-образ Harness. Первая KMP-проверка
+# в чистом worktree может быть медленной, поэтому по умолчанию — 900 секунд.
+testGeneration.checkTimeoutSeconds=900
+testGeneration.githubToken=

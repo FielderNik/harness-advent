@@ -27,6 +27,7 @@ enum class TaskScenario {
     @SerialName("supportAnswer") SUPPORT_ANSWER,
     @SerialName("codeReview") CODE_REVIEW,
     @SerialName("agentWorkflow") AGENT_WORKFLOW,
+    @SerialName("testGeneration") TEST_GENERATION,
 }
 
 @Serializable
@@ -188,4 +189,46 @@ data class ModelProfile(
     val models: List<String>,
     val contextPolicy: ContextPolicy,
     val capabilities: Set<String>,
+)
+
+/** Текущее покрытие одного production-класса тестами в рамках проекта. */
+@Serializable
+data class TestCoveragePlan(
+    val id: String,
+    val projectId: String,
+    val target: TestCoverageTarget = TestCoverageTarget.REPOSITORIES,
+    val analyzedAt: Long,
+    val items: List<TestCoveragePlanItem> = emptyList(),
+)
+
+@Serializable
+enum class TestCoverageTarget { REPOSITORIES }
+
+@Serializable
+enum class TestCoverageStatus {
+    @SerialName("needsTests") NEEDS_TESTS,
+    @SerialName("covered") COVERED,
+    @SerialName("coveredInOpenPr") COVERED_IN_OPEN_PR,
+    @SerialName("inProgress") IN_PROGRESS,
+    @SerialName("testsWritten") TESTS_WRITTEN,
+    @SerialName("checking") CHECKING,
+    @SerialName("awaitingPublication") AWAITING_PUBLICATION,
+    @SerialName("prCreated") PR_CREATED,
+    @SerialName("failed") FAILED,
+    @SerialName("blocked") BLOCKED,
+}
+
+@Serializable
+data class TestCoveragePlanItem(
+    val id: String,
+    val planId: String,
+    val className: String,
+    val sourcePath: String,
+    val testPath: String,
+    val status: TestCoverageStatus,
+    val reason: String? = null,
+    val taskId: String? = null,
+    val branch: String? = null,
+    val pullRequestUrl: String? = null,
+    val updatedAt: Long,
 )

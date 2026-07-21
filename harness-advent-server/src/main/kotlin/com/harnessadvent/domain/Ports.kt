@@ -29,6 +29,12 @@ interface SourceRepository {
     suspend fun search(projectId: String, query: String, limit: Int = 10): List<SourceDocument>
 }
 
+interface TestCoveragePlanRepository {
+    suspend fun findByProject(projectId: String): TestCoveragePlan?
+    suspend fun save(plan: TestCoveragePlan): TestCoveragePlan
+    suspend fun updateItem(item: TestCoveragePlanItem): TestCoveragePlanItem
+}
+
 interface ProjectFiles {
     suspend fun list(project: Project, limit: Int = 300): List<String>
     suspend fun search(project: Project, query: String, limit: Int = 50): List<FileSearchMatch>
@@ -101,4 +107,30 @@ data class McpToolResult(
 
 interface GitProvider {
     val publishingEnabled: Boolean
+}
+
+interface OpenPullRequestReader {
+    suspend fun changedFiles(project: Project): Set<String>
+}
+
+interface PullRequestPublisher {
+    suspend fun create(branch: String, className: String): PublishedPullRequest
+}
+
+@Serializable
+data class TestWorkspace(val root: String, val branch: String, val testPath: String)
+data class TestCheckResult(val successful: Boolean, val output: String, val timedOut: Boolean = false)
+data class PublishedPullRequest(val url: String, val number: Int)
+
+/**
+ * Узкий порт для тестового сценария. Он не принимает произвольные команды,
+ * пути или сообщения коммита от модели.
+ */
+interface TestGenerationWorkspace {
+    suspend fun create(project: Project, taskId: String, branch: String, testPath: String): TestWorkspace
+    suspend fun writeTest(workspace: TestWorkspace, content: String)
+    suspend fun runChecks(workspace: TestWorkspace, onOutput: suspend (String) -> Unit = {}): TestCheckResult
+    suspend fun commit(workspace: TestWorkspace, className: String)
+    suspend fun push(workspace: TestWorkspace)
+    suspend fun cleanup(workspace: TestWorkspace)
 }

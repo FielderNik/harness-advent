@@ -27,6 +27,8 @@ Compose публикует `8095` только на `127.0.0.1`, поэтому 
 
 В интерфейсе регистрируй проект с путём `/workspace`. Переменная `HARNESS_ALLOWED_PROJECTS=/workspace` задаётся самим Compose и имеет приоритет над `harness.local.properties`, поэтому через API нельзя зарегистрировать другой путь. Для файлового сценария создай `agentWorkflow` в режиме `mayModify` и подтверди `fileModification`: агент использует только операции поиска, чтения и записи относительно `/workspace`, а журнал и хеши изменений появятся в артефактах задачи.
 
+Для генерации unit-тестов регистрируй тот же `/workspace`. Сценарий создаёт временный worktree в `/workspace/.harness-worktrees`; этот каталог удаляется после успешной публикации или ошибки. Незакоммиченные изменения в основной рабочей копии допустимы и в worktree не попадают. Runtime-образ содержит Git, полноценный JDK с `javac` и Android SDK API 36 с build-tools 35.0.0 и 36.0.0. Он запускается как `linux/amd64`: Android command-line tools поддерживаются для этой Linux-платформы, а Docker Desktop эмулирует её на ARM-хосте. Gradle-кэш остаётся в volume состояния Harness, а служебные Android-файлы создаются во временном каталоге контейнера; оба не попадают в подключённый проект. После изменения Dockerfile обязательно пересобери образ. Для GitHub-токена используй секрет окружения `HARNESS_GITHUB_TEST_GENERATION_TOKEN`; не добавляй его в `.env` проекта или образ. Полный контракт — в [test-generation.md](test-generation.md).
+
 ## Граница доступа
 
 - образ запускается непривилегированным пользователем, с read-only root filesystem, без Linux capabilities и без Docker socket;

@@ -65,3 +65,18 @@ test("support answer uses its dedicated endpoint and carries a ticket id", async
     });
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("test generation uses its dedicated endpoint and idempotency key", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, init };
+    return new Response(JSON.stringify({ plan: { id: "plan-1", items: [] } }), { status: 202 });
+  };
+  try {
+    await new HarnessApi("http://server.test").startTestGeneration({ projectId: "project-1", modelProfileId: "local" }, "test-key");
+    assert.equal(request.url, "http://server.test/api/v1/test-generation");
+    assert.equal(new Headers(request.init.headers).get("Idempotency-Key"), "test-key");
+    assert.deepEqual(JSON.parse(request.init.body), { projectId: "project-1", modelProfileId: "local" });
+  } finally { globalThis.fetch = originalFetch; }
+});

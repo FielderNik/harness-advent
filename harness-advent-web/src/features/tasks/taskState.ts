@@ -14,6 +14,7 @@ const scenarioLabels: Record<TaskScenario, string> = {
   supportAnswer: "Ассистент поддержки",
   codeReview: "Код-ревью",
   agentWorkflow: "Агентский сценарий",
+  testGeneration: "Генерация unit-тестов",
 };
 
 const modeLabels: Record<TaskMode, string> = {

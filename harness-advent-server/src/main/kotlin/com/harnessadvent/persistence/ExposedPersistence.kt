@@ -38,8 +38,10 @@ private object SchemaMigrations {
                 ApprovalsTable,
                 SourceDocumentsTable,
                 RagSourceChunksTable,
+                TestCoveragePlansTable,
+                TestCoveragePlanItemsTable,
             )
-            SchemaVersionsTable.insert { it[version] = 3 }
+            SchemaVersionsTable.insert { it[version] = 4 }
             return
         }
         val currentVersion = SchemaVersionsTable.selectAll().maxOf { it[SchemaVersionsTable.version] }
@@ -51,6 +53,10 @@ private object SchemaMigrations {
         if (currentVersion < 3) {
             SchemaUtils.create(RagSourceChunksTable)
             SchemaVersionsTable.insert { it[version] = 3 }
+        }
+        if (currentVersion < 4) {
+            SchemaUtils.create(TestCoveragePlansTable, TestCoveragePlanItemsTable)
+            SchemaVersionsTable.insert { it[version] = 4 }
         }
     }
 }
@@ -151,6 +157,29 @@ private object RagSourceChunksTable : Table("rag_source_chunks") {
     val sha256 = varchar("sha256", 128)
     val content = text("content")
     override val primaryKey = PrimaryKey(projectId, path, lineStart)
+}
+
+private object TestCoveragePlansTable : Table("test_coverage_plans") {
+    val id = varchar("id", 64)
+    val projectId = varchar("project_id", 64).uniqueIndex()
+    val target = varchar("target", 64)
+    val analyzedAt = long("analyzed_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+private object TestCoveragePlanItemsTable : Table("test_coverage_plan_items") {
+    val id = varchar("id", 64)
+    val planId = varchar("plan_id", 64).index()
+    val className = varchar("class_name", 512)
+    val sourcePath = varchar("source_path", 2048)
+    val testPath = varchar("test_path", 2048)
+    val status = varchar("status", 64)
+    val reason = text("reason").nullable()
+    val taskId = varchar("task_id", 64).nullable()
+    val branch = varchar("branch", 256).nullable()
+    val pullRequestUrl = varchar("pull_request_url", 2048).nullable()
+    val updatedAt = long("updated_at")
+    override val primaryKey = PrimaryKey(id)
 }
 
 class ExposedProjectRepository(private val database: HarnessDatabase) : ProjectRepository {
@@ -313,6 +342,59 @@ class ExposedSourceRepository(private val database: HarnessDatabase) : SourceRep
     }
 }
 
+class ExposedTestCoveragePlanRepository(private val database: HarnessDatabase) : TestCoveragePlanRepository {
+    override suspend fun findByProject(projectId: String): TestCoveragePlan? = databaseQuery(database) {
+        TestCoveragePlansTable.selectAll().where { TestCoveragePlansTable.projectId eq projectId }
+            .singleOrNull()
+            ?.let(::toCoveragePlan)
+    }
+
+    override suspend fun save(plan: TestCoveragePlan): TestCoveragePlan = databaseQuery(database) {
+        TestCoveragePlansTable.deleteWhere { TestCoveragePlansTable.projectId eq plan.projectId }
+        TestCoveragePlanItemsTable.deleteWhere { TestCoveragePlanItemsTable.planId eq plan.id }
+        TestCoveragePlansTable.insert {
+            it[id] = plan.id
+            it[projectId] = plan.projectId
+            it[target] = plan.target.name
+            it[analyzedAt] = plan.analyzedAt
+        }
+        plan.items.forEach(::insertCoverageItem)
+        plan
+    }
+
+    override suspend fun updateItem(item: TestCoveragePlanItem): TestCoveragePlanItem = databaseQuery(database) {
+        TestCoveragePlanItemsTable.update({ TestCoveragePlanItemsTable.id eq item.id }) {
+            it[className] = item.className
+            it[sourcePath] = item.sourcePath
+            it[testPath] = item.testPath
+            it[status] = item.status.name
+            it[reason] = item.reason
+            it[taskId] = item.taskId
+            it[branch] = item.branch
+            it[pullRequestUrl] = item.pullRequestUrl
+            it[updatedAt] = item.updatedAt
+        }
+        requireNotNull(TestCoveragePlanItemsTable.selectAll().where { TestCoveragePlanItemsTable.id eq item.id }
+            .singleOrNull()?.let(::toCoverageItem))
+    }
+
+    private fun insertCoverageItem(item: TestCoveragePlanItem) {
+        TestCoveragePlanItemsTable.insert {
+            it[id] = item.id
+            it[planId] = item.planId
+            it[className] = item.className
+            it[sourcePath] = item.sourcePath
+            it[testPath] = item.testPath
+            it[status] = item.status.name
+            it[reason] = item.reason
+            it[taskId] = item.taskId
+            it[branch] = item.branch
+            it[pullRequestUrl] = item.pullRequestUrl
+            it[updatedAt] = item.updatedAt
+        }
+    }
+}
+
 private suspend fun <T> databaseQuery(database: HarnessDatabase, block: Transaction.() -> T): T =
     withContext(Dispatchers.IO) { transaction(database.database, statement = block) }
 
@@ -343,4 +425,32 @@ private fun toArtifact(row: org.jetbrains.exposed.v1.core.ResultRow) = Artifact(
 private fun toRagSource(row: org.jetbrains.exposed.v1.core.ResultRow) = SourceDocument(
     projectId = row[RagSourceChunksTable.projectId], path = row[RagSourceChunksTable.path], revision = row[RagSourceChunksTable.revision],
     lineStart = row[RagSourceChunksTable.lineStart], lineEnd = row[RagSourceChunksTable.lineEnd], sha256 = row[RagSourceChunksTable.sha256], content = row[RagSourceChunksTable.content],
+)
+
+private fun toCoveragePlan(row: org.jetbrains.exposed.v1.core.ResultRow): TestCoveragePlan {
+    val planId = row[TestCoveragePlansTable.id]
+    val items = TestCoveragePlanItemsTable.selectAll().where { TestCoveragePlanItemsTable.planId eq planId }
+        .map(::toCoverageItem)
+        .sortedBy(TestCoveragePlanItem::className)
+    return TestCoveragePlan(
+        id = planId,
+        projectId = row[TestCoveragePlansTable.projectId],
+        target = TestCoverageTarget.valueOf(row[TestCoveragePlansTable.target]),
+        analyzedAt = row[TestCoveragePlansTable.analyzedAt],
+        items = items,
+    )
+}
+
+private fun toCoverageItem(row: org.jetbrains.exposed.v1.core.ResultRow) = TestCoveragePlanItem(
+    id = row[TestCoveragePlanItemsTable.id],
+    planId = row[TestCoveragePlanItemsTable.planId],
+    className = row[TestCoveragePlanItemsTable.className],
+    sourcePath = row[TestCoveragePlanItemsTable.sourcePath],
+    testPath = row[TestCoveragePlanItemsTable.testPath],
+    status = TestCoverageStatus.valueOf(row[TestCoveragePlanItemsTable.status]),
+    reason = row[TestCoveragePlanItemsTable.reason],
+    taskId = row[TestCoveragePlanItemsTable.taskId],
+    branch = row[TestCoveragePlanItemsTable.branch],
+    pullRequestUrl = row[TestCoveragePlanItemsTable.pullRequestUrl],
+    updatedAt = row[TestCoveragePlanItemsTable.updatedAt],
 )

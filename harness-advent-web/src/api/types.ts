@@ -1,5 +1,5 @@
 export type ProjectScanStatus = "NOT_SCANNED" | "READY" | "FAILED";
-export type TaskScenario = "ragQuestion" | "supportAnswer" | "codeReview" | "agentWorkflow";
+export type TaskScenario = "ragQuestion" | "supportAnswer" | "codeReview" | "agentWorkflow" | "testGeneration";
 export type TaskMode = "readOnly" | "mayModify";
 export type TaskStatus = "queued" | "running" | "waitingApproval" | "completed" | "failed" | "cancelled";
 export type EventLevel = "INFO" | "WARNING" | "ERROR";
@@ -77,3 +77,27 @@ export interface SupportAnswerInput {
   question: string;
   modelProfileId: string;
 }
+
+export type TestCoverageStatus = "needsTests" | "covered" | "coveredInOpenPr" | "inProgress" | "testsWritten" | "checking" | "awaitingPublication" | "prCreated" | "failed" | "blocked";
+export interface TestCoveragePlanItem {
+  id: string;
+  planId: string;
+  className: string;
+  sourcePath: string;
+  testPath: string;
+  status: TestCoverageStatus;
+  reason?: string;
+  taskId?: string;
+  branch?: string;
+  pullRequestUrl?: string;
+  updatedAt: number;
+}
+export interface TestCoveragePlan {
+  id: string;
+  projectId: string;
+  target: "REPOSITORIES";
+  analyzedAt: number;
+  items: TestCoveragePlanItem[];
+}
+export interface TestGenerationStartResult { plan: TestCoveragePlan; task?: Task; }
+export interface TestGenerationInput { projectId: string; modelProfileId: string; }

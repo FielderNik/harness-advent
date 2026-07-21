@@ -1,5 +1,8 @@
 services:
   harness:
+    # Android SDK command-line tools доступны для Linux x86_64; Docker Desktop
+    # эмулирует эту платформу на ARM-хосте.
+    platform: linux/amd64
     build:
       context: ./harness-advent-server
     init: true
@@ -7,7 +10,7 @@ services:
     read_only: true
     cap_drop:
       - ALL
-    pids_limit: 128
+    pids_limit: 512
     security_opt:
       - no-new-privileges:true
     tmpfs:
@@ -21,6 +24,9 @@ services:
       HARNESS_ALLOWED_PROJECTS: /workspace
       HARNESS_DATABASE_URL: jdbc:sqlite:/var/lib/harness/harness-advent.db
       HARNESS_CONFIG_FILE: /config/harness.local.properties
+      # Необязательный секрет для testGeneration; передаётся из локального .env
+      # и никогда не записывается в image или properties-файл.
+      HARNESS_GITHUB_TEST_GENERATION_TOKEN: ${HARNESS_GITHUB_TEST_GENERATION_TOKEN:-}
     volumes:
       - type: bind
         source: ${HARNESS_PROJECT_PATH:?Укажи абсолютный путь к одному проекту в HARNESS_PROJECT_PATH}

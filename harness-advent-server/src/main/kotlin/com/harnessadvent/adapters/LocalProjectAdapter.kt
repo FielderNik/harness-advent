@@ -145,7 +145,7 @@ class SafeProjectFiles(private val allowedProjectPolicy: AllowedProjectPolicy) :
         const val MAX_MATCH_LINE_LENGTH = 1_000
         const val MAX_FILE_SIZE_BYTES = 1_000_000
         const val MAX_PATH_LENGTH = 1_024
-        val BLOCKED_DIRECTORIES = setOf(".git", ".gradle", "build", "out", "node_modules", ".idea", "rag-index", "logs")
+        val BLOCKED_DIRECTORIES = setOf(".git", ".gradle", "build", "out", "node_modules", ".idea", "rag-index", "logs", ".harness-worktrees")
         val API_DIRECTORIES = setOf("api", "schemas", "schema", "contracts")
         val SOURCE_EXTENSIONS = setOf(
             "kt", "kts", "java", "ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php", "cs", "swift",
@@ -205,7 +205,7 @@ class SafeProjectScanner {
     private companion object {
         const val MAX_FILE_SIZE_BYTES = 1_000_000L
         const val CHUNK_LINES = 80
-        val IGNORED_DIRECTORIES = setOf(".git", ".gradle", "build", "out", "node_modules", ".idea", "rag-index", "logs")
+        val IGNORED_DIRECTORIES = setOf(".git", ".gradle", "build", "out", "node_modules", ".idea", "rag-index", "logs", ".harness-worktrees")
         val API_DIRECTORIES = setOf("api", "schemas", "schema", "contracts")
         val SOURCE_EXTENSIONS = setOf(
             "kt", "kts", "java", "ts", "tsx", "js", "jsx", "py", "go", "rs", "rb", "php", "cs", "swift",

@@ -12,6 +12,9 @@ import type {
   TaskCreateInput,
   HelpCommandInput,
   SupportAnswerInput,
+  TestCoveragePlan,
+  TestGenerationInput,
+  TestGenerationStartResult,
 } from "./types.js";
 
 export class ApiError extends Error {
@@ -40,6 +43,7 @@ export class HarnessApi {
   }
   project(id: string) { return this.request<Project>(`/api/v1/projects/${encodeURIComponent(id)}`); }
   scanProject(id: string) { return this.request<Project>(`/api/v1/projects/${encodeURIComponent(id)}/scan`, { method: "POST" }); }
+  testCoveragePlan(projectId: string) { return this.request<TestCoveragePlan>(`/api/v1/projects/${encodeURIComponent(projectId)}/test-coverage-plan`); }
   tasks() { return this.request<Task[]>("/api/v1/tasks"); }
   task(id: string) { return this.request<Task>(`/api/v1/tasks/${encodeURIComponent(id)}`); }
   artifacts(id: string) { return this.request<Artifact[]>(`/api/v1/tasks/${encodeURIComponent(id)}/artifacts`); }
@@ -65,6 +69,14 @@ export class HarnessApi {
 
   createSupportAnswer(input: SupportAnswerInput, idempotencyKey: string) {
     return this.request<Task>("/api/v1/support/answers", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(input),
+    });
+  }
+
+  startTestGeneration(input: TestGenerationInput, idempotencyKey: string) {
+    return this.request<TestGenerationStartResult>("/api/v1/test-generation", {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(input),

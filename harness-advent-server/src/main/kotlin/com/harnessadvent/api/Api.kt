@@ -5,6 +5,7 @@ import com.harnessadvent.application.HelpCommandService
 import com.harnessadvent.application.McpService
 import com.harnessadvent.application.ProjectService
 import com.harnessadvent.application.TaskService
+import com.harnessadvent.application.TestCoverageService
 import com.harnessadvent.bootstrap.HarnessConfig
 import com.harnessadvent.domain.*
 import io.ktor.http.*
@@ -80,6 +81,9 @@ data class SupportAnswerCreateRequest(
 )
 
 @Serializable
+data class TestGenerationCreateRequest(val projectId: String, val modelProfileId: String)
+
+@Serializable
 data class McpToolCallRequest(val arguments: JsonObject = JsonObject(emptyMap()))
 
 fun Application.configureMonitoring() {
@@ -115,6 +119,7 @@ fun Application.configureApi() {
     val modelProvider by inject<ModelProvider>()
     val helpCommandService by inject<HelpCommandService>()
     val mcpService by inject<McpService>()
+    val testCoverageService by inject<TestCoverageService>()
     val config by inject<HarnessConfig>()
     val json = Json { explicitNulls = false }
     val logger = log
@@ -171,6 +176,19 @@ fun Application.configureApi() {
                 call.respond(HttpStatusCode.Accepted, task)
             }
 
+            route("/test-generation") {
+                post {
+                    val request = call.receive<TestGenerationCreateRequest>()
+                    val result = testCoverageService.start(
+                        projectId = request.projectId,
+                        modelProfileId = request.modelProfileId,
+                        author = call.actor(),
+                        idempotencyKey = call.request.headers["Idempotency-Key"],
+                    )
+                    call.respond(HttpStatusCode.Accepted, result)
+                }
+            }
+
             route("/mcp/servers") {
                 get { call.respond(mcpService.servers()) }
                 get("/{id}/tools") { call.respond(mcpService.tools(call.requiredId())) }
@@ -190,6 +208,7 @@ fun Application.configureApi() {
                 }
                 get("/{id}") { call.respond(projectService.get(call.requiredId())) }
                 post("/{id}/scan") { call.respond(projectService.scan(call.requiredId())) }
+                get("/{id}/test-coverage-plan") { call.respond(testCoverageService.get(call.requiredId())) }
             }
 
             post("/code-reviews") {

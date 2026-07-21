@@ -31,7 +31,18 @@ data class McpServerConnection(
     val timeoutSeconds: Long,
 ) {
     val isConfigured: Boolean
-        get() = command.isNotBlank() && arguments.isNotEmpty() && readOnly && allowedTools.isNotEmpty()
+        get() = command.isNotBlank() && arguments.isNotEmpty() && allowedTools.isNotEmpty()
+}
+
+data class TestGenerationConfig(
+    val enabled: Boolean,
+    val githubToken: String?,
+    val allowedRepository: String?,
+    val baseBranch: String,
+    val checkCommand: List<String>,
+    val checkTimeoutSeconds: Long = 900,
+) {
+    val isConfigured: Boolean get() = enabled && !githubToken.isNullOrBlank() && !allowedRepository.isNullOrBlank()
 }
 
 data class HarnessConfig(
@@ -43,6 +54,7 @@ data class HarnessConfig(
     val supportYouTrackServerId: String = "youtrack",
     val codeReviewApiToken: String? = null,
     val codeReviewAutoApprovedContextProfiles: Set<String> = emptySet(),
+    val testGeneration: TestGenerationConfig = TestGenerationConfig(false, null, null, "main", defaultTestCheckCommand()),
 ) {
     companion object {
         private const val DEFAULT_CONFIG_FILE = "harness.local.properties"
@@ -90,6 +102,21 @@ data class HarnessConfig(
                 .filter(String::isNotEmpty)
                 .distinct()
                 .map { id -> mcpServerConnection(properties, id) }
+            val testGeneration = TestGenerationConfig(
+                enabled = properties.getProperty("testGeneration.enabled")?.toBooleanStrictOrNull() ?: false,
+                githubToken = System.getenv("HARNESS_GITHUB_TEST_GENERATION_TOKEN")?.trim()?.takeIf(String::isNotEmpty)
+                    ?: properties.getProperty("testGeneration.githubToken")?.trim()?.takeIf(String::isNotEmpty),
+                allowedRepository = properties.getProperty("testGeneration.allowedRepository")?.trim()?.takeIf(String::isNotEmpty),
+                baseBranch = properties.getProperty("testGeneration.baseBranch")?.trim()?.takeIf(String::isNotEmpty) ?: "main",
+                checkCommand = properties.getProperty("testGeneration.checkCommand")
+                    ?.split(',')?.map(String::trim)?.filter(String::isNotEmpty)
+                    ?.takeIf { it.isNotEmpty() } ?: defaultTestCheckCommand(),
+                checkTimeoutSeconds = properties.getProperty("testGeneration.checkTimeoutSeconds")
+                    ?.toLongOrNull()?.coerceIn(30, 900) ?: 900,
+            )
+            if (testGeneration.enabled) {
+                require(testGeneration.isConfigured) { "Для генерации тестов нужны Git push token и разрешённый репозиторий." }
+            }
             return HarnessConfig(
                 databaseUrl = System.getenv("HARNESS_DATABASE_URL")?.takeIf(String::isNotBlank)
                     ?: properties.getProperty("server.databaseUrl")
@@ -102,6 +129,7 @@ data class HarnessConfig(
                     ?.takeIf(String::isNotEmpty) ?: "youtrack",
                 codeReviewApiToken = properties.getProperty("codeReview.apiToken")?.trim()?.takeIf(String::isNotEmpty),
                 codeReviewAutoApprovedContextProfiles = autoApprovedProfiles,
+                testGeneration = testGeneration,
             )
         }
 
@@ -120,6 +148,10 @@ data class HarnessConfig(
             "openrouter" -> "OpenRouter OpenAI-compatible API"
             else -> id
         }
+
+        private fun defaultTestCheckCommand(): List<String> = listOf(
+            "./gradlew", ":composeApp:testDebugUnitTest", "--no-daemon", "--no-watch-fs", "--max-workers=2",
+        )
 
         private fun mcpServerConnection(properties: Properties, id: String): McpServerConnection {
             val prefix = "mcp.$id."
@@ -144,8 +176,10 @@ data class HarnessConfig(
                 require(connection.allowedRepositories.size == 1) {
                     "GitHub MCP должен быть ограничен ровно одним репозиторием owner/repository."
                 }
-                require(connection.environment["GITHUB_READ_ONLY"] == "1") {
-                    "GitHub MCP требует GITHUB_READ_ONLY=1."
+                if (connection.readOnly) require(connection.environment["GITHUB_READ_ONLY"] == "1") {
+                    "Read-only GitHub MCP требует GITHUB_READ_ONLY=1."
+                } else require(connection.environment["GITHUB_READ_ONLY"] != "1") {
+                    "GitHub MCP для публикации PR не может быть запущен с GITHUB_READ_ONLY=1."
                 }
             }
             return connection

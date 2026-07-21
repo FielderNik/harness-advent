@@ -19,6 +19,15 @@ import kotlin.test.assertTrue
 
 class ModelProviderTest {
     @Test
+    fun `test generation check timeout is bounded`() {
+        val config = HarnessConfig.fromProperties(Properties().apply {
+            setProperty("testGeneration.checkTimeoutSeconds", "1200")
+        })
+
+        assertEquals(900, config.testGeneration.checkTimeoutSeconds)
+    }
+
+    @Test
     fun `reads allowed projects from HARNESS_ALLOWED_PROJECTS`() {
         val firstProject = Files.createTempDirectory("harness-project")
         val secondProject = Files.createTempDirectory("harness-project")

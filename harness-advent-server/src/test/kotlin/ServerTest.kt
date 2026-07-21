@@ -2,7 +2,9 @@ package com.harnessadvent
 
 import com.harnessadvent.bootstrap.HarnessConfig
 import com.harnessadvent.bootstrap.McpServerConnection
+import com.harnessadvent.bootstrap.TestGenerationConfig
 import com.harnessadvent.bootstrap.moduleForTests
+import com.harnessadvent.adapters.GitHubMcpPullRequestPublisher
 import com.harnessadvent.domain.ContextPolicy
 import com.harnessadvent.domain.ModelCompletionRequest
 import com.harnessadvent.domain.ModelCompletionResult
@@ -26,6 +28,33 @@ import java.nio.file.Files
 import kotlin.test.*
 
 class ServerTest {
+    @Test
+    fun `test generation creates pull request through GitHub MCP`() = kotlinx.coroutines.runBlocking {
+        var tool = ""
+        var receivedArguments = JsonObject(emptyMap())
+        val mcp = object : McpRegistry {
+            override suspend fun servers() = emptyList<McpServer>()
+            override suspend fun tools(serverId: String) = emptyList<McpTool>()
+            override suspend fun call(serverId: String, toolName: String, arguments: JsonObject): McpToolResult {
+                assertEquals("github", serverId)
+                tool = toolName
+                receivedArguments = arguments
+                return McpToolResult("""[{"type":"text","text":"{\"html_url\":\"https://github.test/owner/repository/pull/7\",\"number\":7}"}]""")
+            }
+        }
+        val publisher = GitHubMcpPullRequestPublisher(
+            mcp,
+            TestGenerationConfig(true, "git-push-token", "owner/repository", "main", listOf("./gradlew", "test")),
+        )
+
+        val result = publisher.create("harness/tests/profile-repository", "com.example.ProfileRepositoryImpl")
+
+        assertEquals("create_pull_request", tool)
+        assertEquals("harness/tests/profile-repository", receivedArguments["head"]?.jsonPrimitive?.content)
+        assertEquals("main", receivedArguments["base"]?.jsonPrimitive?.content)
+        assertEquals(7, result.number)
+    }
+
     @Test
     fun `health endpoint is available without secrets`() = testApplication {
         application { moduleForTests(testConfig(), testModelProvider) }
@@ -355,6 +384,42 @@ class ServerTest {
         assertContains(artifacts, "fileOperations")
         assertContains(artifacts, "fileChanges")
         assertContains(artifacts, "docs/CHANGELOG.md")
+    }
+
+    @Test
+    fun `test generation builds a repository coverage plan and reserves one class`() = testApplication {
+        val repository = Files.createTempDirectory("trainingdiary")
+        val source = repository.resolve("composeApp/src/commonMain/kotlin/com/example/data/repository/ProfileRepositoryImpl.kt")
+        val coveredSource = repository.resolve("composeApp/src/commonMain/kotlin/com/example/data/repository/ExerciseRepositoryImpl.kt")
+        Files.createDirectories(source.parent)
+        Files.writeString(source, "package com.example.data.repository\nclass ProfileRepositoryImpl")
+        Files.writeString(coveredSource, "package com.example.data.repository\nclass ExerciseRepositoryImpl")
+        val test = repository.resolve("composeApp/src/commonTest/kotlin/com/example/data/repository/ExerciseRepositoryImplTest.kt")
+        Files.createDirectories(test.parent)
+        Files.writeString(test, "package com.example.data.repository\nimport kotlin.test.Test\nclass ExerciseRepositoryImplTest { @Test fun maps() = Unit }")
+        application { moduleForTests(testConfig(repository), testModelProvider) }
+        val projectId = createProject(client, repository)
+
+        val response = client.post("/api/v1/test-generation") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"projectId":"$projectId","modelProfileId":"local"}""")
+        }
+
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+        val plan = body["plan"]!!.jsonObject
+        val items = plan["items"]!!.jsonArray
+        assertEquals(2, items.size)
+        assertContains(items.toString(), "ProfileRepositoryImpl")
+        assertContains(items.toString(), "inProgress")
+        assertContains(items.toString(), "covered")
+        val task = body["task"]!!.jsonObject
+        val taskId = task["id"]!!.jsonPrimitive.content
+        val inProgress = items.first { it.jsonObject["status"]?.jsonPrimitive?.content == "inProgress" }.jsonObject
+        assertEquals("harness/tests/profile-repository-${taskId.take(8)}", inProgress["branch"]?.jsonPrimitive?.content)
+        assertEquals("waitingApproval", task["status"]!!.jsonPrimitive.content)
+        assertEquals("fileModification", body["task"]!!.jsonObject["pendingApprovalKind"]!!.jsonPrimitive.content)
+        assertEquals(HttpStatusCode.OK, client.get("/api/v1/projects/$projectId/test-coverage-plan").status)
     }
 
     private suspend fun createProject(client: io.ktor.client.HttpClient, repository: java.nio.file.Path): String {

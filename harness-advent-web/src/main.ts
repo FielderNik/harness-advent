@@ -1,10 +1,10 @@
 import "./styles.css";
 import { HarnessApi, ApiError } from "./api/client.js";
 import { subscribeToTaskEvents, type TaskEventSubscription } from "./api/events.js";
-import type { Artifact, McpServer, ModelProfile, Project, Task, TaskEvent, TaskMode, TaskScenario } from "./api/types.js";
+import type { Artifact, McpServer, ModelProfile, Project, Task, TaskEvent, TaskMode, TaskScenario, TestCoveragePlan, TestCoverageStatus } from "./api/types.js";
 import { canCancelTask, isTerminalTask, modeLabel, scenarioLabel, statusLabel } from "./features/tasks/taskState.js";
 
-type Page = "tasks" | "projects";
+type Page = "tasks" | "projects" | "coverage";
 type Tab = "plan" | "timeline" | "ticket" | "sources" | "changes" | "checks" | "report";
 type Dialog = { type: "cancel" } | { type: "approval" } | null;
 
@@ -19,6 +19,8 @@ let projects: Project[] = [];
 let tasks: Task[] = [];
 let profiles: ModelProfile[] = [];
 let mcpServers: McpServer[] = [];
+let coveragePlan: TestCoveragePlan | null = null;
+let coverageProjectId: string | null = null;
 let selectedTaskId: string | null = null;
 let selectedProfileId = "";
 let events: TaskEvent[] = [];
@@ -31,6 +33,8 @@ let loading = false;
 let dialog: Dialog = null;
 let subscription: TaskEventSubscription | null = null;
 let pollingTimer: number | null = null;
+
+const testGenerationProfileId = "deepseek";
 
 const escapeHtml = (value: string) => value
   .replaceAll("&", "&amp;")
@@ -166,6 +170,7 @@ function render() {
         <nav class="navigation" aria-label="Разделы">
           ${navigationItem("tasks", "Задачи")}
           ${navigationItem("projects", "Проекты и RAG")}
+          ${navigationItem("coverage", "Покрытие тестами")}
         </nav>
         <button class="primary-button new-task" data-action="new-task" type="button">Новая задача</button>
         ${page === "tasks" ? taskList() : projectList()}
@@ -173,7 +178,7 @@ function render() {
 
       <section class="main-scene" aria-label="Рабочая область">
         ${notification()}
-        ${page === "projects" ? projectsScreen() : tasksScreen(task)}
+        ${page === "projects" ? projectsScreen() : page === "coverage" ? coverageScreen() : tasksScreen(task)}
       </section>
 
       <aside class="utility-panel" aria-label="Параметры и подтверждения">
@@ -283,11 +288,11 @@ function tabContent(task: Task) {
   const tabArtifacts = (type: string) => artifacts.filter((item) => item.type === type);
   if (tab === "timeline") return timelineContent();
   if (tab === "ticket") return artifactContent(tabArtifacts("supportTicketContext"), "Контекст тикета ещё не получен.", "После обращения к YouTrack MCP здесь появится очищенный контекст тикета.");
-  if (tab === "plan") return artifactContent(tabArtifacts("modelReport"), "План пока не сохранён отдельным артефактом.", "План и стадии сервера появятся здесь по мере развития API.");
+  if (tab === "plan") return artifactContent([...tabArtifacts("testCoveragePlanItem"), ...tabArtifacts("modelReport")], "План пока не сохранён отдельным артефактом.", "План и стадии сервера появятся здесь по мере развития API.");
   if (tab === "sources") return artifactContent(task.scenario === "supportAnswer" ? tabArtifacts("supportSources") : tabArtifacts("ragSources"), "Источники ещё не получены.", "Для поиска сначала отсканируйте проект и создайте задачу поиска.");
-  if (tab === "report") return artifactContent([...tabArtifacts("modelReport"), ...tabArtifacts("codeReviewReport"), ...tabArtifacts("supportAnswer")], "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
-  if (tab === "changes") return unavailableArtifact("Изменения рабочей копии", "Текущий безопасный серверный адаптер не изменяет файлы. Когда появятся diff-артефакты, они будут отображены здесь.");
-  return unavailableArtifact("Проверки", "Текущий безопасный серверный адаптер не запускает внешние команды. Проверки и их логи будут доступны отдельными артефактами.");
+  if (tab === "report") return artifactContent([...tabArtifacts("testGenerationReport"), ...tabArtifacts("modelReport"), ...tabArtifacts("codeReviewReport"), ...tabArtifacts("supportAnswer")], "Итоговый ответ ещё не готов.", task.status === "completed" ? "Сервер не сохранил ответ модели для этой задачи." : "Ответ появится после завершения задачи.");
+  if (tab === "changes") return task.scenario === "testGeneration" ? artifactContent(tabArtifacts("testGenerationWorkspace"), "Изменения ещё не подготовлены.", "После успешной проверки появится изолированный worktree и ветка.") : unavailableArtifact("Изменения рабочей копии", "Текущий безопасный серверный адаптер не изменяет файлы. Когда появятся diff-артефакты, они будут отображены здесь.");
+  return task.scenario === "testGeneration" ? artifactContent(tabArtifacts("testCheck"), "Проверка ещё не запускалась.", "Результат разрешённой Gradle-проверки появится после записи теста.") : unavailableArtifact("Проверки", "Текущий безопасный серверный адаптер не запускает внешние команды. Проверки и их логи будут доступны отдельными артефактами.");
 }
 
 function timelineContent() {
@@ -312,8 +317,15 @@ function projectsScreen() {
       <div class="form-grid"><label>Название<input name="name" required maxlength="128" placeholder="Например, DataMobileX" /></label><label>Абсолютный путь<input name="path" required placeholder="/Users/name/projects/my-project" /></label></div>
       <div class="form-actions"><button class="primary-button" type="submit">Добавить проект</button></div>
     </form>
-    ${projects.length === 0 ? `<div class="empty-state compact-empty"><h2>Нет подключённых проектов</h2><p>Добавьте каталог выше, затем запустите сканирование.</p></div>` : `<div class="projects-table" role="region" aria-label="Подключённые проекты"><table><thead><tr><th>Проект</th><th>Статус индекса</th><th>Последнее сканирование</th><th></th></tr></thead><tbody>${projects.map((project) => `<tr><td><strong>${escapeHtml(project.name)}</strong><small class="technical">${escapeHtml(project.path)}</small></td><td>${scanStatusLabel(project.scanStatus)}</td><td>${formatDate(project.lastScannedAt)}</td><td><button class="secondary-button" data-action="scan-project" data-project-id="${project.id}" type="button">Сканировать</button></td></tr>`).join("")}</tbody></table></div>`}
+    ${projects.length === 0 ? `<div class="empty-state compact-empty"><h2>Нет подключённых проектов</h2><p>Добавьте каталог выше, затем запустите сканирование.</p></div>` : `<div class="projects-table" role="region" aria-label="Подключённые проекты"><table><thead><tr><th>Проект</th><th>Статус индекса</th><th>Последнее сканирование</th><th></th></tr></thead><tbody>${projects.map((project) => `<tr><td><strong>${escapeHtml(project.name)}</strong><small class="technical">${escapeHtml(project.path)}</small></td><td>${scanStatusLabel(project.scanStatus)}</td><td>${formatDate(project.lastScannedAt)}</td><td><button class="secondary-button" data-action="scan-project" data-project-id="${project.id}" type="button">Сканировать</button> <button class="primary-button" data-action="test-generation" data-project-id="${project.id}" type="button">Написать тесты</button></td></tr>`).join("")}</tbody></table></div>`}
   `;
+}
+
+function coverageScreen() {
+  const project = projects.find((item) => item.id === coverageProjectId);
+  if (!coveragePlan) return `<header class="scene-header"><div><p class="eyebrow">Покрытие тестами</p><h1>План пока не создан</h1><p class="metadata">Нажмите «Написать тесты» у проекта: сервер найдёт реализации репозиториев и выберет один класс для пайплайна.</p></div></header>`;
+  return `<header class="scene-header"><div><p class="eyebrow">${escapeHtml(project?.name ?? "Проект")} · репозитории</p><h1>План unit-тестов</h1><p class="metadata">Обновлён ${formatDate(coveragePlan.analyzedAt)}. Один пайплайн обрабатывает один класс.</p></div></header>
+    <div class="projects-table" role="region" aria-label="План покрытия unit-тестами"><table><thead><tr><th>Класс</th><th>Тест</th><th>Статус</th><th>Причина</th></tr></thead><tbody>${coveragePlan.items.map((item) => `<tr><td><strong>${escapeHtml(item.className)}</strong><small class="technical">${escapeHtml(item.sourcePath)}</small></td><td class="technical">${escapeHtml(item.testPath)}</td><td>${coverageStatusLabel(item.status)}</td><td>${escapeHtml(item.reason ?? "—")}${item.pullRequestUrl ? `<br><a href="${escapeHtml(item.pullRequestUrl)}" target="_blank" rel="noreferrer">Pull request</a>` : ""}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 function utilityPanel(task: Task | null) {
@@ -337,8 +349,11 @@ function mcpPanel() {
 function approvalPanel(task: Task | null) {
   if (!task || task.status !== "waitingApproval") return `<p class="form-help">Нет ожидающих подтверждений.</p>`;
   const isContextTransfer = task.pendingApprovalKind === "contextTransfer";
+  const isPublication = task.pendingApprovalKind === "externalPublication";
   const copy = isContextTransfer
     ? "Выбранный облачный профиль получит только отобранные фрагменты проекта. Передача ещё не выполнена."
+    : isPublication
+      ? "Тесты прошли проверку. Подтверждение разрешит push ветки и создание pull request в разрешённом GitHub-репозитории."
     : "Задача может изменить рабочую копию. Сервер ещё не выполнял изменение.";
   return `<p class="approval-copy">${copy}</p><button class="primary-button full-width" data-action="ask-approval" type="button">Рассмотреть подтверждение</button>`;
 }
@@ -347,9 +362,10 @@ function dialogMarkup(task: Task | null) {
   if (!task) return "";
   const isCancel = dialog?.type === "cancel";
   const isContextTransfer = task.pendingApprovalKind === "contextTransfer";
-  const title = isCancel ? "Отменить задачу?" : isContextTransfer ? "Подтвердить передачу контекста?" : "Подтвердить изменение рабочей копии?";
-  const description = isCancel ? "Сервер остановит задачу, если отмена поддерживается текущим этапом." : isContextTransfer ? "В облачный провайдер будут переданы только отобранные безопасным сканером фрагменты проекта. Публикация и доступ к ключам не разрешаются." : "Подтверждение разрешает следующий изменяющий шаг. Внешняя публикация и доступ к ключам не разрешаются.";
-  const scope = isContextTransfer ? "Выбранные фрагменты проекта" : "Только текущая рабочая копия";
+  const isPublication = task.pendingApprovalKind === "externalPublication";
+  const title = isCancel ? "Отменить задачу?" : isContextTransfer ? "Подтвердить передачу контекста?" : isPublication ? "Создать pull request?" : "Подтвердить изменение рабочей копии?";
+  const description = isCancel ? "Сервер остановит задачу, если отмена поддерживается текущим этапом." : isContextTransfer ? "В облачный провайдер будут переданы только отобранные безопасным сканером фрагменты проекта. Публикация и доступ к ключам не разрешаются." : isPublication ? "Сервер отправит уже проверенную ветку только в разрешённый GitHub-репозиторий и создаст pull request." : "Подтверждение разрешает следующий изменяющий шаг. Внешняя публикация и доступ к ключам не разрешаются.";
+  const scope = isContextTransfer ? "Выбранные фрагменты проекта" : isPublication ? "Одна подготовленная ветка и один GitHub pull request" : "Только текущая рабочая копия";
   return `<div class="dialog-backdrop" data-action="close-dialog"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><h2 id="dialog-title">${title}</h2><p>${description}</p><dl class="details-list"><div><dt>Задача</dt><dd>${escapeHtml(shorten(task.input, 90))}</dd></div><div><dt>Режим</dt><dd>${modeLabel(task.mode)}</dd></div><div><dt>Область</dt><dd>${scope}</dd></div></dl><div class="dialog-actions"><button class="secondary-button" data-action="close-dialog" type="button">Не выполнять</button><button class="${isCancel ? "danger-button" : "primary-button"}" data-action="confirm-dialog" type="button">${isCancel ? "Отменить задачу" : "Подтвердить"}</button></div></section></div>`;
 }
 
@@ -390,6 +406,7 @@ appRoot.addEventListener("click", (event) => {
     case "close-dialog": dialog = null; render(); break;
     case "confirm-dialog": void confirmDialog(); break;
     case "scan-project": if (target.dataset.projectId) void scanProject(target.dataset.projectId); break;
+    case "test-generation": if (target.dataset.projectId) void startTestGeneration(target.dataset.projectId); break;
   }
 });
 
@@ -485,6 +502,31 @@ async function scanProject(projectId: string) {
     projects = projects.map((item) => item.id === project.id ? project : item);
     setMessage(`Проект «${project.name}» просканирован.`);
   } catch (cause) { setError(cause); } finally { loading = false; render(); }
+}
+
+async function startTestGeneration(projectId: string) {
+  const testGenerationProfile = profiles.find((profile) => profile.id === testGenerationProfileId && profile.endpointConfigured);
+  if (!testGenerationProfile) { setError(new Error("Для генерации тестов нужен настроенный профиль DeepSeek.")); render(); return; }
+  loading = true;
+  render();
+  try {
+    const result = await api.startTestGeneration({ projectId, modelProfileId: testGenerationProfileId }, crypto.randomUUID());
+    coveragePlan = result.plan;
+    coverageProjectId = projectId;
+    page = "coverage";
+    if (result.task) {
+      tasks = [result.task, ...tasks.filter((item) => item.id !== result.task!.id)];
+      selectedTaskId = result.task.id;
+      trackTask(result.task.id);
+      setMessage("План обновлён. DeepSeek напишет тесты для одного класса после подтверждения изменения рабочей копии.");
+    } else {
+      setMessage("План обновлён: классов, которым нужны тесты, не найдено.");
+    }
+  } catch (cause) { setError(cause); } finally { loading = false; render(); }
+}
+
+function coverageStatusLabel(status: TestCoverageStatus) {
+  return ({ needsTests: "Нужны тесты", covered: "Покрыт", coveredInOpenPr: "Тесты в открытом PR", inProgress: "В работе", testsWritten: "Тест записан", checking: "Проверка", awaitingPublication: "Ожидает публикации", prCreated: "PR создан", failed: "Ошибка", blocked: "Заблокирован" } as const)[status];
 }
 
 async function createProject(form: FormData) {
